@@ -50,3 +50,10 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# What lapka compiles via Makefile
+tui
+# the binary
+release/
+tests/unit/test_*
+!tests/unit/test_*.c

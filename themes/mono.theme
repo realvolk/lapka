@@ -1,0 +1,15 @@
+bg=0x000000
+fg=0xFFFFFF
+accent=0xFFFFFF
+title=0xAAAAAA
+muted=0x777777
+error=0xFFFFFF
+warning=0xFFFFFF
+success=0xFFFFFF
+border=single
+cursor=|
+check=x
+radio_on=(*)
+radio_off=( )
+bullet=*
+arrow=>

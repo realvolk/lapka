@@ -28,6 +28,8 @@ typedef struct {
     char          **choices;
     int             choice_count;
     char           *choices_cmd;
+    char          **cached_choices;
+    int             cached_choice_count;
     char           *placeholder;
     char           *message;
     char           *visible_if_key;
@@ -49,6 +51,8 @@ typedef struct {
     LapkaHubCategory  *categories;
     int                category_count;
     char              *dir;
+    LapkaHubItem      *merged_items;
+    int                merged_item_count;
 } LapkaHubDef;
 
 LapkaHubDef *lapka_hub_parse(FILE *fp);

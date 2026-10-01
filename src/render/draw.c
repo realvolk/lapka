@@ -237,3 +237,35 @@ int lapka_draw_hint(LapkaFramebuffer *fb, int y, const LapkaHintItem *items, int
     }
     return 0;
 }
+
+int lapka_put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
+                 uint32_t fg, uint32_t bg, uint16_t attrs) {
+    if (x < 0 || y < 0 || x >= w || y >= h) return 0;
+    LapkaCell c = { cp, fg, bg, attrs };
+    buf[(size_t)y * (size_t)w + (size_t)x] = c;
+    return 0;
+}
+
+int lapka_draw_str(LapkaCell *buf, int w, int h, int x, int y,
+                   const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
+                   int max_cols) {
+    if (!s) return 0;
+    const uint8_t *p = (const uint8_t *)s;
+    int cx = x;
+    int used = 0;
+    while (*p) {
+        uint32_t cp;
+        int bytes = lapka_utf8_decode(p, 4, &cp);
+        if (bytes <= 0) break;
+        p += bytes;
+        int cw = lapka_cp_width(cp);
+        if (cw == 0) continue;
+        if (max_cols >= 0 && used + cw > max_cols) break;
+        for (int i = 0; i < cw; i++) {
+            lapka_put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
+        }
+        cx += cw;
+        used += cw;
+    }
+    return used;
+}

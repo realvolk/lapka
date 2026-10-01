@@ -5,7 +5,7 @@ A layered terminal compositor library for C99 and POSIX.1-2008. Ships a binary c
 ## What it is
 
 - **Fourteen verbs**, called from bash as `tui <verb> ...`. Each prints a result on stdout and exits with a code bash can `case` on.
-- **Eleven primitives**, linked into your own program as `liblapka.a`. `LapkaBlock`, `LapkaList`, `LapkaText`, `LapkaPrompt`, `LapkaTabs`, `LapkaProgress`, `LapkaSummary`, `LapkaTree`, `LapkaNotification`, `LapkaPager`, `LapkaEditor`.
+- **Nine primitives**, linked into your own program as `liblapka.a`. `LapkaList`, `LapkaText`, `LapkaTabs`, `LapkaProgress`, `LapkaSummary`, `LapkaTree`, `LapkaNotification`, `LapkaPager`, `LapkaEditor`.
 - **A layer compositor** with `OPAQUE` and `TRANSPARENT` blending, z-ordering, and input routing across layers.
 - **UTF-8** everywhere. Wide characters, combining marks, CJK, emoji. Codepoint-based cursor arithmetic.
 - **Damage-diffed rendering.** No flicker. No `\033[2J`.
@@ -72,7 +72,7 @@ tui toast "Config saved" --duration=2000
 tui hub --in=/tmp/hub-in --out=/tmp/hub-out </dev/tty || exit 1
 ```
 
-Every verb accepts `--where=TL|TC|TR|LC|CC|RC|BL|BC|BR` for placement and `--color N` / `--title-color N` for theme overrides. `spin` also accepts `--hold N|enter|none`.
+Every verb accepts `--theme=FILE`, overriding `LAPKA_THEME`. `spin` also accepts `--where=TL|TC|TR|LC|CC|RC|BL|BC|BR` and `--hold N|enter|none`.
 
 ### Session mode
 
@@ -151,6 +151,8 @@ int main(void) {
 }
 ```
 
+`lapka_draw_text` is declared in `src/render/draw.h`, which is not installed. To build this example against the current tree, copy `src/render/draw.h` into your include path or include the source.
+
 Build with:
 
 ```sh
@@ -159,7 +161,7 @@ cc -std=c99 -D_POSIX_C_SOURCE=200809L -O2 myapp.c liblapka.a -o myapp
 
 ## The hub
 
-`tui hub` is a form engine driven by a text file bash generates. There is no compiled-in hub, no runtime spec parser, no JSON. Bash writes what the form looks like; the hub renders it.
+`tui hub` renders a form described by a text file that bash generates. There is no compiled-in form table.
 
 ```bash
 cat > /tmp/hub-in <<'EOF'
@@ -185,7 +187,7 @@ tui hub --in=/tmp/hub-in --out=/tmp/hub-out </dev/tty || exit 1
 while IFS='=' read -r k v; do state_set "$k" "$v"; done < /tmp/hub-out
 ```
 
-Values come back as flat `KEY=value` lines, ready to feed straight to `state_set`. Items with `visible_if` are hidden unless their condition matches, and hidden items have their values cleared automatically.
+Values come back as flat `KEY=value` lines for `state_set`. Items with `visible_if` are hidden unless their condition matches; hidden items have their values cleared automatically.
 
 Items can also point at another hub file:
 
@@ -193,7 +195,7 @@ Items can also point at another hub file:
 item key=MANAGE label="Users" widget=subhub subhub="users.hub"
 ```
 
-`users.hub` is a full hub in its own right. It opens as a full-screen layer on top of the parent. On Proceed, its values merge into the parent's; on Esc, they are discarded.
+`users.hub` is a full hub in its own right. It opens as a full-screen layer on top of the parent. On Proceed, its values merge into the parent's; on Esc, they are discarded. A relative `subhub` path resolves against the directory of the IN file that declared it.
 
 `--check` makes the hub refuse to open `--in` or `--out` unless both are root-owned regular files with mode 0600 or stricter. Use it when the state contains passwords.
 
@@ -245,6 +247,7 @@ Layers compose with `OPAQUE` (solid panels, modals, editors) and `TRANSPARENT` (
 
 - `docs/spec.md` — the specification.
 - `docs/headers.md` — every public symbol grouped by header.
+- `docs/TODO.md` — deferred work.
 - `docs/CONTRIBUTORS.md` — contributions under alternate terms.
 - `CONTRIBUTING.md` — how to contribute.
 

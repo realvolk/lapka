@@ -6,6 +6,7 @@
  */
 
 #include <lapka/primitive.h>
+#include <render/draw.h>
 #include "core/utf8.h"
 
 #include <stdio.h>
@@ -42,37 +43,6 @@ typedef struct {
     bool    pending_undo_capture;
     bool    cursor_visible;
 } EditorData;
-
-static void put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
-                   uint32_t fg, uint32_t bg, uint16_t attrs) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    LapkaCell c = { cp, fg, bg, attrs };
-    buf[(size_t)y * (size_t)w + (size_t)x] = c;
-}
-
-static int draw_str(LapkaCell *buf, int w, int h, int x, int y,
-                    const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
-                    int max_cols) {
-    if (!s) return 0;
-    const uint8_t *p = (const uint8_t *)s;
-    int cx = x;
-    int used = 0;
-    while (*p) {
-        uint32_t cp;
-        int bytes = lapka_utf8_decode(p, 4, &cp);
-        if (bytes <= 0) break;
-        p += bytes;
-        int cw = lapka_cp_width(cp);
-        if (cw == 0) continue;
-        if (max_cols >= 0 && used + cw > max_cols) break;
-        for (int i = 0; i < cw; i++) {
-            put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
-        }
-        cx += cw;
-        used += cw;
-    }
-    return used;
-}
 
 static int cp_count(const char *s) {
     if (!s) return 0;
@@ -245,7 +215,7 @@ static void editor_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
     for (int i = 0; i < content_h; i++) {
         int idx = d->scroll + i;
         if (idx >= d->line_count) break;
-        draw_str(buf, w, h, 0, i, d->lines[idx], 0, 0, 0, w);
+        lapka_draw_str(buf, w, h, 0, i, d->lines[idx], 0, 0, 0, w);
     }
 
     if (d->cursor_visible) {
@@ -262,7 +232,7 @@ static void editor_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
     }
 
     const char *hint = d->hint ? d->hint : "";
-    draw_str(buf, w, h, 0, h - 1, hint, theme->muted, 0, 0, w);
+    lapka_draw_str(buf, w, h, 0, h - 1, hint, theme->muted, 0, 0, w);
 }
 
 static void editor_measure(LapkaPrimitive *p, int bound_w, int bound_h,

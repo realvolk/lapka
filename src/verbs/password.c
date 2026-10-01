@@ -75,6 +75,11 @@ int cmd_password(int argc, char **argv) {
         if (strncmp(argv[i], "--", 2) == 0 && argv[i][2] != '\0') return 3;
     }
 
+    if (isatty(STDOUT_FILENO)) {
+        fprintf(stderr, "tui: password requires stdout to be redirected\n");
+        return 2;
+    }
+
     PwData d = { argv[0], argv[1], NULL, 0, 0, NULL };
     d.text = lapka_text_new("", true);
     if (!d.text) return 2;
@@ -86,13 +91,6 @@ int cmd_password(int argc, char **argv) {
     int rc = lapka_run(&opts, &cb, -1);
 
     if (rc == 0 && d.done) {
-        if (isatty(STDOUT_FILENO)) {
-            fputc('\n', stderr);
-            fprintf(stderr, "tui: password requires stdout to be redirected\n");
-            free(d.value);
-            lapka_primitive_free(d.text);
-            return 2;
-        }
         printf("%s\n", d.value);
         fflush(stdout);
     }

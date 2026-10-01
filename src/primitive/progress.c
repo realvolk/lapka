@@ -6,6 +6,7 @@
  */
 
 #include <lapka/primitive.h>
+#include <render/draw.h>
 #include "core/utf8.h"
 
 #include <stdio.h>
@@ -17,37 +18,6 @@ typedef struct {
     int   value;
     char *message;
 } ProgressData;
-
-static void put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
-                   uint32_t fg, uint32_t bg, uint16_t attrs) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    LapkaCell c = { cp, fg, bg, attrs };
-    buf[(size_t)y * (size_t)w + (size_t)x] = c;
-}
-
-static int draw_str(LapkaCell *buf, int w, int h, int x, int y,
-                    const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
-                    int max_cols) {
-    if (!s) return 0;
-    const uint8_t *p = (const uint8_t *)s;
-    int cx = x;
-    int used = 0;
-    while (*p) {
-        uint32_t cp;
-        int bytes = lapka_utf8_decode(p, 4, &cp);
-        if (bytes <= 0) break;
-        p += bytes;
-        int cw = lapka_cp_width(cp);
-        if (cw == 0) continue;
-        if (max_cols >= 0 && used + cw > max_cols) break;
-        for (int i = 0; i < cw; i++) {
-            put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
-        }
-        cx += cw;
-        used += cw;
-    }
-    return used;
-}
 
 static void progress_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
                           const LapkaTheme *theme) {
@@ -81,13 +51,13 @@ static void progress_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
     for (int i = 0; i < bar_w; i++) {
         uint32_t cp = (i < filled) ? 0x2588 : 0x2591;
         uint32_t fg = (i < filled) ? theme->accent : theme->muted;
-        put_cp(buf, w, h, i, 0, cp, fg, 0, 0);
+        lapka_put_cp(buf, w, h, i, 0, cp, fg, 0, 0);
     }
 
-    draw_str(buf, w, h, bar_w + 1, 0, pct_str, 0, 0, 0, w - bar_w - 1);
+    lapka_draw_str(buf, w, h, bar_w + 1, 0, pct_str, 0, 0, 0, w - bar_w - 1);
 
     if (h >= 2 && d->message && d->message[0]) {
-        draw_str(buf, w, h, 0, 1, d->message, theme->muted, 0, 0, w);
+        lapka_draw_str(buf, w, h, 0, 1, d->message, theme->muted, 0, 0, w);
     }
 }
 

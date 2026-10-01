@@ -128,6 +128,8 @@ static void free_item(LapkaHubItem *it) {
     for (int i = 0; i < it->choice_count; i++) free(it->choices[i]);
     free(it->choices);
     free(it->choices_cmd);
+    for (int i = 0; i < it->cached_choice_count; i++) free(it->cached_choices[i]);
+    free(it->cached_choices);
     free(it->placeholder);
     free(it->message);
     free(it->visible_if_key);
@@ -304,5 +306,11 @@ void lapka_hub_def_free(LapkaHubDef *def) {
         free(cat->items);
     }
     free(def->categories);
+    for (int i = 0; i < def->merged_item_count; i++) {
+        free(def->merged_items[i].key);
+        free(def->merged_items[i].label);
+        free(def->merged_items[i].value);
+    }
+    free(def->merged_items);
     free(def);
 }

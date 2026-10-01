@@ -130,6 +130,11 @@ int cmd_password_confirm(int argc, char **argv) {
     if (!title || !first_body) return 3;
     if (!confirm_prompt) confirm_prompt = first_body;
 
+    if (isatty(STDOUT_FILENO)) {
+        fprintf(stderr, "tui: password-confirm requires stdout to be redirected\n");
+        return 2;
+    }
+
     int attempt = 0;
     const char *error = NULL;
 
@@ -143,13 +148,6 @@ int cmd_password_confirm(int argc, char **argv) {
         if (cancelled) { free(pass); return 1; }
 
         if (strcmp(pass, confirm) == 0) {
-            if (isatty(STDOUT_FILENO)) {
-                fputc('\n', stderr);
-                fprintf(stderr, "tui: password-confirm requires stdout to be redirected\n");
-                free(pass);
-                free(confirm);
-                return 2;
-            }
             printf("%s\n", pass);
             fflush(stdout);
             free(pass);
@@ -162,8 +160,6 @@ int cmd_password_confirm(int argc, char **argv) {
 
         attempt++;
         if (tries != 0 && attempt >= tries) {
-            error = "too many attempts";
-            prompt_once(title, first_body, error, &cancelled);
             return 1;
         }
 

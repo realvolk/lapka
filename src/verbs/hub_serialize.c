@@ -49,5 +49,12 @@ int lapka_hub_serialize(LapkaHubDef *def, FILE *out) {
             fputc('\n', out);
         }
     }
+    for (int i = 0; i < def->merged_item_count; i++) {
+        LapkaHubItem *it = &def->merged_items[i];
+        fputs(it->key, out);
+        fputc('=', out);
+        write_value(out, it->value);
+        fputc('\n', out);
+    }
     return 0;
 }

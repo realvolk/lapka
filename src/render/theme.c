@@ -45,28 +45,12 @@ const LapkaTheme LAPKA_THEME_DEFAULT = {
     "( )",
     "*",
     ">",
+    false,
 };
 
 static LapkaTheme s_active;
 static bool       s_active_valid = false;
 static char      *s_active_path  = NULL;
-static char      *s_cursor_owned = NULL;
-static char      *s_check_owned = NULL;
-static char      *s_radio_on_owned = NULL;
-static char      *s_radio_off_owned = NULL;
-static char      *s_bullet_owned = NULL;
-static char      *s_arrow_owned = NULL;
-
-static void owned_free(char **p) {
-    if (*p) { free(*p); *p = NULL; }
-}
-
-static char *owned_strdup(char **slot, const char *value) {
-    owned_free(slot);
-    if (!value) return NULL;
-    *slot = strdup(value);
-    return *slot;
-}
 
 static int parse_color(const char *s, uint32_t *out) {
     if (!s) return -1;
@@ -150,17 +134,17 @@ int lapka_theme_load(const char *path, LapkaTheme *out) {
         } else if (strcmp(key, "border") == 0) {
             out->border = parse_border(value);
         } else if (strcmp(key, "cursor") == 0) {
-            out->cursor = owned_strdup(&s_cursor_owned, value);
+            out->cursor = strdup(value);
         } else if (strcmp(key, "check") == 0) {
-            out->check = owned_strdup(&s_check_owned, value);
+            out->check = strdup(value);
         } else if (strcmp(key, "radio_on") == 0) {
-            out->radio_on = owned_strdup(&s_radio_on_owned, value);
+            out->radio_on = strdup(value);
         } else if (strcmp(key, "radio_off") == 0) {
-            out->radio_off = owned_strdup(&s_radio_off_owned, value);
+            out->radio_off = strdup(value);
         } else if (strcmp(key, "bullet") == 0) {
-            out->bullet = owned_strdup(&s_bullet_owned, value);
+            out->bullet = strdup(value);
         } else if (strcmp(key, "arrow") == 0) {
-            out->arrow = owned_strdup(&s_arrow_owned, value);
+            out->arrow = strdup(value);
         }
     }
 
@@ -171,6 +155,7 @@ int lapka_theme_load(const char *path, LapkaTheme *out) {
     if (!has_modal_border) out->modal_border = lapka_color_darken(out->title, 40);
     if (!has_modal_title) out->modal_title = lapka_color_darken(out->title, 20);
 
+    out->owns_strings = true;
     return 0;
 }
 
@@ -183,18 +168,38 @@ int lapka_theme_set_file(const char *path) {
     LapkaTheme t = LAPKA_THEME_DEFAULT;
     if (lapka_theme_load(path, &t) != 0) return -1;
 
+    lapka_theme_free(&s_active);
     s_active = t;
     s_active_valid = true;
 
-    owned_free(&s_active_path);
+    free(s_active_path);
     s_active_path = strdup(path);
     return 0;
 }
 
 void lapka_theme_reset(void) {
+    lapka_theme_free(&s_active);
     s_active = LAPKA_THEME_DEFAULT;
     s_active_valid = false;
-    owned_free(&s_active_path);
+    free(s_active_path);
+    s_active_path = NULL;
+}
+
+void lapka_theme_free(LapkaTheme *t) {
+    if (!t || !t->owns_strings) return;
+    free((char *)t->cursor);
+    free((char *)t->check);
+    free((char *)t->radio_on);
+    free((char *)t->radio_off);
+    free((char *)t->bullet);
+    free((char *)t->arrow);
+    t->cursor = NULL;
+    t->check = NULL;
+    t->radio_on = NULL;
+    t->radio_off = NULL;
+    t->bullet = NULL;
+    t->arrow = NULL;
+    t->owns_strings = false;
 }
 
 const LapkaTheme *lapka_theme_active(void) {
@@ -214,9 +219,10 @@ const LapkaTheme *lapka_theme_active(void) {
         return &s_active;
     }
 
+    lapka_theme_free(&s_active);
     s_active = t;
     s_active_valid = true;
-    owned_free(&s_active_path);
+    free(s_active_path);
     s_active_path = strdup(path);
     return &s_active;
 }

@@ -14,6 +14,7 @@ typedef struct {
 
 static const Range zero_width_ranges[] = {
     { 0x0300,  0x036F  },
+    { 0x3099,  0x309A  },
     { 0x1AB0,  0x1AFF  },
     { 0x1DC0,  0x1DFF  },
     { 0x20D0,  0x20FF  },

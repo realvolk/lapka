@@ -12,10 +12,8 @@
 #include <stdbool.h>
 
 typedef enum {
-    LAPKA_PRIMITIVE_BLOCK,
     LAPKA_PRIMITIVE_LIST,
     LAPKA_PRIMITIVE_TEXT,
-    LAPKA_PRIMITIVE_PROMPT,
     LAPKA_PRIMITIVE_TABS,
     LAPKA_PRIMITIVE_PROGRESS,
     LAPKA_PRIMITIVE_SUMMARY,
@@ -91,14 +89,6 @@ void            lapka_text_set(LapkaPrimitive *p, const char *value);
 const char     *lapka_text_value(LapkaPrimitive *p);
 void            lapka_text_on_change(LapkaPrimitive *p, void (*fn)(void *), void *ud);
 void            lapka_text_set_prefix(LapkaPrimitive *p, const char *prefix);
-
-LapkaPrimitive *lapka_block_new(const char *text);
-void            lapka_block_set(LapkaPrimitive *p, const char *text);
-void            lapka_block_align(LapkaPrimitive *p, LapkaAnchor align);
-void            lapka_block_style(LapkaPrimitive *p, uint32_t fg, uint32_t bg, uint16_t attrs);
-
-LapkaPrimitive *lapka_prompt_new(const char *hint);
-void            lapka_prompt_set(LapkaPrimitive *p, const char *hint);
 
 LapkaPrimitive *lapka_tabs_new(const char **labels, int count);
 void            lapka_tabs_set_child(LapkaPrimitive *p, int idx, LapkaPrimitive *child);

@@ -69,6 +69,9 @@ struct HubData {
 typedef struct {
     LapkaHubItem   *item;
     LapkaPrimitive *primitive;
+    LapkaCell      *scratch;
+    int             scratch_w;
+    int             scratch_h;
 } EditorData;
 
 typedef struct {
@@ -174,6 +177,13 @@ static char **choices_from_command(const char *cmd, int *count_out) {
     return items;
 }
 
+static void ensure_cached_choices(LapkaHubItem *item) {
+    if (!item->choices_cmd) return;
+    if (item->cached_choices) return;
+    item->cached_choices = choices_from_command(item->choices_cmd,
+                                                &item->cached_choice_count);
+}
+
 static LapkaPrimitive *make_editor(LapkaHubItem *item) {
     const char *current = item->value;
 
@@ -181,23 +191,17 @@ static LapkaPrimitive *make_editor(LapkaHubItem *item) {
         case LAPKA_WIDGET_MENU: {
             const char **choices;
             int count;
-            char **tmp = NULL;
 
-            if (item->choices_cmd) {
-                tmp = choices_from_command(item->choices_cmd, &count);
-                choices = (const char **)tmp;
+            ensure_cached_choices(item);
+            if (item->cached_choices) {
+                choices = (const char **)item->cached_choices;
+                count = item->cached_choice_count;
             } else {
                 choices = (const char **)item->choices;
                 count = item->choice_count;
             }
 
             LapkaPrimitive *p = lapka_list_new(choices, count, LAPKA_SELECT_ONE);
-
-            if (tmp) {
-                for (int i = 0; i < count; i++) free(tmp[i]);
-                free(tmp);
-            }
-
             if (!p) return NULL;
 
             if (current && current[0]) {
@@ -242,23 +246,17 @@ static LapkaPrimitive *make_editor(LapkaHubItem *item) {
         case LAPKA_WIDGET_MULTISELECT: {
             const char **choices;
             int count;
-            char **tmp = NULL;
 
-            if (item->choices_cmd) {
-                tmp = choices_from_command(item->choices_cmd, &count);
-                choices = (const char **)tmp;
+            ensure_cached_choices(item);
+            if (item->cached_choices) {
+                choices = (const char **)item->cached_choices;
+                count = item->cached_choice_count;
             } else {
                 choices = (const char **)item->choices;
                 count = item->choice_count;
             }
 
-            LapkaPrimitive *p = lapka_list_new(choices, count, LAPKA_SELECT_MANY);
-
-            if (tmp) {
-                for (int i = 0; i < count; i++) free(tmp[i]);
-                free(tmp);
-            }
-            return p;
+            return lapka_list_new(choices, count, LAPKA_SELECT_MANY);
         }
         default:
             return NULL;
@@ -295,18 +293,25 @@ static void editor_draw(LapkaLayer *l, const LapkaTheme *theme) {
     if (inner_h < 0) inner_h = 0;
 
     if (inner_w > 0 && inner_h > 0) {
-        size_t total = (size_t)inner_w * (size_t)inner_h;
-        LapkaCell *tmp = calloc(total, sizeof(LapkaCell));
-        if (tmp) {
-            ed->primitive->draw(ed->primitive, tmp, inner_w, inner_h, theme);
+        if (ed->scratch_w != inner_w || ed->scratch_h != inner_h) {
+            free(ed->scratch);
+            ed->scratch = calloc((size_t)inner_w * (size_t)inner_h,
+                                 sizeof(LapkaCell));
+            ed->scratch_w = inner_w;
+            ed->scratch_h = inner_h;
+        }
+        if (ed->scratch) {
+            memset(ed->scratch, 0,
+                   (size_t)inner_w * (size_t)inner_h * sizeof(LapkaCell));
+            ed->primitive->draw(ed->primitive, ed->scratch,
+                                inner_w, inner_h, theme);
             for (int y = 0; y < inner_h; y++) {
                 LapkaCell *dst = l->buf
                     + (size_t)(inner_y + y) * (size_t)w
                     + (size_t)inner_x;
-                memcpy(dst, tmp + (size_t)y * (size_t)inner_w,
+                memcpy(dst, ed->scratch + (size_t)y * (size_t)inner_w,
                        (size_t)inner_w * sizeof(LapkaCell));
             }
-            free(tmp);
         }
     }
 
@@ -454,6 +459,8 @@ static void hub_push_subhub(HubData *d, LapkaHubItem *item) {
     if (d->stack_size < HUB_MAX_LAYERS) {
         d->stack[d->stack_size++] = e;
     } else {
+        fprintf(stderr, "tui: hub: subhub stack limit reached (%d)\n",
+                HUB_MAX_LAYERS);
         lapka_layer_free(e->layer);
         lapka_hub_def_free(sub_def);
         free(sub);
@@ -529,9 +536,12 @@ static void modal_draw(LapkaLayer *l, const LapkaTheme *theme) {
 static bool modal_handle(HubLayerEntry *e, const LapkaEvent *ev) {
     if (ev->type != LAPKA_EVENT_KEY) return false;
 
+    if (ev->key.code == LAPKA_KEY_ENTER) {
+        e->result = 0;
+        return true;
+    }
     if (ev->key.code == LAPKA_KEY_CODEPOINT) {
-        if (ev->key.ch == 'y' || ev->key.ch == 'Y' ||
-            ev->key.ch == '\r' || ev->key.ch == '\n') {
+        if (ev->key.ch == 'y' || ev->key.ch == 'Y') {
             e->result = 0;
             return true;
         }
@@ -600,6 +610,8 @@ static void nested_draw(LapkaLayer *l, const LapkaTheme *theme) {
     HubData *sub = l->userdata;
     sub->screen_w = l->rect.w;
     sub->screen_h = l->rect.h;
+    memset(l->buf, 0,
+           (size_t)l->rect.w * (size_t)l->rect.h * sizeof(LapkaCell));
     LapkaFramebuffer fb = { l->rect.w, l->rect.h, l->buf, NULL, true };
     hub_draw_full(sub, &fb, theme);
 }
@@ -617,10 +629,26 @@ static bool nested_handle(HubLayerEntry *e, const LapkaEvent *ev) {
 static void nested_commit(HubLayerEntry *e) {
     HubData *sub = e->layer->userdata;
     HubData *parent = e->hub;
+    LapkaHubDef *pd = parent->def;
+
     for (int c = 0; c < sub->def->category_count; c++) {
         LapkaHubCategory *cat = &sub->def->categories[c];
         for (int i = 0; i < cat->item_count; i++) {
-            value_set(parent, cat->items[i].key, cat->items[i].value);
+            LapkaHubItem *child_item = &cat->items[i];
+            if (item_find(parent, child_item->key)) {
+                value_set(parent, child_item->key, child_item->value);
+            } else {
+                LapkaHubItem *nm = realloc(pd->merged_items,
+                    (size_t)(pd->merged_item_count + 1) * sizeof(LapkaHubItem));
+                if (!nm) continue;
+                pd->merged_items = nm;
+                LapkaHubItem *m = &pd->merged_items[pd->merged_item_count++];
+                memset(m, 0, sizeof(*m));
+                m->key = xstrdup(child_item->key);
+                m->label = xstrdup(child_item->label);
+                m->value = xstrdup(child_item->value);
+                m->widget = child_item->widget;
+            }
         }
     }
 }
@@ -642,6 +670,7 @@ static void entry_free_data(HubLayerEntry *e) {
             EditorData *ed = e->data;
             if (ed) {
                 if (ed->primitive) lapka_primitive_free(ed->primitive);
+                free(ed->scratch);
                 free(ed);
             }
             break;
@@ -737,9 +766,14 @@ static void draw_hub_body(HubData *d, LapkaFramebuffer *fb,
 
         int sel = (i == d->item_idx);
         char line[512];
-        snprintf(line, sizeof(line), "%s %s: %s",
-                 sel ? ">" : " ", item->label,
-                 current[0] ? current : "(unset)");
+        if (item->widget == LAPKA_WIDGET_SUBHUB) {
+            snprintf(line, sizeof(line), "%s %s",
+                     sel ? ">" : " ", item->label);
+        } else {
+            snprintf(line, sizeof(line), "%s %s: %s",
+                     sel ? ">" : " ", item->label,
+                     current[0] ? current : "(unset)");
+        }
         LapkaRect r = { cx, row, cw, 1 };
         lapka_draw_text(fb, r, line,
                         sel ? theme->accent : 0, 0,
@@ -760,6 +794,20 @@ static void draw_hub_body(HubData *d, LapkaFramebuffer *fb,
 
     LapkaRect fr = { 0, fb->h - 1, fb->w, 1 };
     lapka_draw_text(fb, fr, actions, theme->muted, 0, 0);
+}
+
+static void hub_draw_message(HubData *d, LapkaFramebuffer *fb,
+                             const LapkaTheme *theme) {
+    if (d->stack_size == 0) return;
+    HubLayerEntry *e = d->stack[d->stack_size - 1];
+    if (e->kind != HUB_LAYER_EDITOR) return;
+    EditorData *ed = e->data;
+    if (!ed || !ed->item->message || !ed->item->message[0]) return;
+
+    int msg_y = e->layer->rect.y - 1;
+    if (msg_y < 2 || msg_y >= fb->h) return;
+    LapkaRect r = { e->layer->rect.x, msg_y, e->layer->rect.w, 1 };
+    lapka_draw_text(fb, r, ed->item->message, theme->muted, 0, 0);
 }
 
 static void hub_draw_full(HubData *d, LapkaFramebuffer *fb,
@@ -802,6 +850,8 @@ static void hub_draw_full(HubData *d, LapkaFramebuffer *fb,
     }
 
     lapka_composite(fb, layers, d->stack_size);
+
+    hub_draw_message(d, fb, theme);
 }
 
 static void move_item(HubData *d, int delta) {
@@ -925,15 +975,9 @@ int cmd_hub(int argc, char **argv) {
         }
     }
 
-    FILE *in = fopen(in_path, "r");
-    if (!in) {
-        fprintf(stderr, "tui: hub: cannot read %s\n", in_path);
-        return 2;
-    }
-    LapkaHubDef *def = lapka_hub_parse(in);
-    fclose(in);
+    LapkaHubDef *def = lapka_hub_parse_file(in_path);
     if (!def) {
-        fprintf(stderr, "tui: hub: failed to parse %s\n", in_path);
+        fprintf(stderr, "tui: hub: cannot read or parse %s\n", in_path);
         return 2;
     }
 

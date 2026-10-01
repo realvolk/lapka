@@ -7,7 +7,7 @@
 
 #pragma once
 
-#define LAPKA_VERSION "0.1.0"
+#define LAPKA_VERSION "0.1.1"
 
 #include <lapka/types.h>
 #include <lapka/theme.h>

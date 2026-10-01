@@ -36,7 +36,7 @@ static int emit_cursor(LapkaBuf *out, int x, int y) {
 }
 
 static int emit_codepoint(LapkaBuf *out, uint32_t cp) {
-    if (cp == 0) cp = ' ';
+    if (cp == 0 || cp == 0x09) cp = ' ';
     uint8_t enc[4];
     int n = lapka_utf8_encode(cp, enc);
     return lapka_buf_append(out, (const char *)enc, (size_t)n);

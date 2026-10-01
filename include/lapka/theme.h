@@ -29,6 +29,7 @@ typedef struct {
     const char *radio_off;
     const char *bullet;
     const char *arrow;
+    bool owns_strings;
 } LapkaTheme;
 
 extern const LapkaTheme LAPKA_THEME_DEFAULT;
@@ -39,3 +40,4 @@ int                lapka_theme_load(const char *path, LapkaTheme *out);
 const LapkaTheme *lapka_theme_active(void);
 int                lapka_theme_set_file(const char *path);
 void               lapka_theme_reset(void);
+void               lapka_theme_free(LapkaTheme *t);

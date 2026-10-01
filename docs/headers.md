@@ -6,11 +6,11 @@ Every public symbol, grouped by header. The spec is in `docs/spec.md`.
 
 ## `lapka.h`
 
-Umbrella header. Includes everything below.
-
 ```c
 #define LAPKA_VERSION "0.1.0"
 ```
+
+Includes `types.h`, `theme.h`, and `verbs.h`. `layer.h` and `primitive.h` are not included.
 
 ---
 
@@ -66,7 +66,7 @@ typedef struct {
 } LapkaSize;
 ```
 
-`FIT` clips to parent. `FULL` equals the parent. `FIXED` is exactly `val`. `PERCENT` is `parent * val / 100`, clamped to `[0, 100]`.
+`FIT` clips to parent. `FULL` equals the parent. `FIXED` is exactly `val`, clamped to the parent bound. `PERCENT` is `parent * val / 100`, clamped to `[0, 100]`.
 
 ### Anchor
 
@@ -164,7 +164,9 @@ typedef struct {
 
 `LAPKA_KEY_CODEPOINT` with `ch` carries a printable or control codepoint. `Ctrl+A` is `{LAPKA_KEY_CODEPOINT, 'a', LAPKA_MOD_CTRL}`. Ctrl-C is `{LAPKA_KEY_CODEPOINT, 0x03, LAPKA_MOD_CTRL}` and every verb treats it as user cancel.
 
-`LAPKA_EVENT_PASTE` data is NUL-terminated and valid UTF-8.
+`LAPKA_EVENT_PASTE` is not produced by the input layer. Bracketed paste is enabled on the terminal when a verb requests it, but the parser does not accumulate it into a single event. Pasted bytes arrive as ordinary codepoint events.
+
+`LAPKA_EVENT_FOCUS_IN` and `LAPKA_EVENT_FOCUS_OUT` are not produced.
 
 Mouse `x` and `y` are screen-absolute, in cells.
 
@@ -209,6 +211,8 @@ typedef struct {
     const char *radio_off;
     const char *bullet;
     const char *arrow;
+
+    bool owns_strings;
 } LapkaTheme;
 
 extern const LapkaTheme LAPKA_THEME_DEFAULT;
@@ -218,15 +222,18 @@ int               lapka_theme_load(const char *path, LapkaTheme *out);
 const LapkaTheme *lapka_theme_active(void);
 int               lapka_theme_set_file(const char *path);
 void              lapka_theme_reset(void);
+void              lapka_theme_free(LapkaTheme *t);
 ```
 
 `lapka_color_darken` multiplies each RGB channel by `(100 - percent) / 100`. `percent` is clamped to `[0, 100]`.
 
-`lapka_theme_load` reads a `KEY=value` file into `out`. Unknown keys are ignored. Missing keys keep whatever was already in `out`.
+`lapka_theme_load` reads a `KEY=value` file into `out`. Unknown keys are ignored. Missing keys keep whatever was already in `out`. On success it sets `out->owns_strings = true`. The caller owns `out`'s string fields and releases them with `lapka_theme_free`.
 
-`lapka_theme_active` returns the active theme. It reads `LAPKA_THEME` on first call, caches the result, and returns the same pointer on every subsequent call.
+`owns_strings` is `false` for `LAPKA_THEME_DEFAULT` and for any `LapkaTheme` copied from it. `lapka_theme_free` is a no-op when `owns_strings` is `false`.
 
-`lapka_theme_set_file` overrides the active theme for the rest of the process. `lapka_theme_reset` reverts to the default.
+`lapka_theme_active` returns the active theme. It reads `LAPKA_THEME` on first call, caches the result, and returns the same pointer on every subsequent call. The returned pointer is owned by the library.
+
+`lapka_theme_set_file` overrides the active theme for the rest of the process. `lapka_theme_reset` reverts to the default and frees any previously loaded strings.
 
 ---
 
@@ -261,6 +268,8 @@ void lapka_composite(LapkaFramebuffer *fb, LapkaLayer **layers, int n);
 ```
 
 `OPAQUE` replaces every cell in the rect. `TRANSPARENT` skips cells with `cp == 0`. Higher `z` is on top. `NONE` skips input, `PASS` forwards unhandled events to the layer below, `TRAP` drops them.
+
+`lapka_layer_free` calls the layer's `free` callback if set, then frees `l->buf` and `l`. The callback owns `userdata` only.
 
 `lapka_composite` sorts the layers by `z` and blends them into the framebuffer. The caller's array is not modified.
 
@@ -302,10 +311,8 @@ The run loop owns the terminal, the framebuffer, and the event loop. It calls `l
 
 ```c
 typedef enum {
-    LAPKA_PRIMITIVE_BLOCK,
     LAPKA_PRIMITIVE_LIST,
     LAPKA_PRIMITIVE_TEXT,
-    LAPKA_PRIMITIVE_PROMPT,
     LAPKA_PRIMITIVE_TABS,
     LAPKA_PRIMITIVE_PROGRESS,
     LAPKA_PRIMITIVE_SUMMARY,
@@ -331,18 +338,6 @@ void lapka_primitive_free(LapkaPrimitive *p);
 ```
 
 `draw` writes into a flat `buf` of `w * h` cells. `handle` returns `true` if the primitive consumed the event. `measure` reports natural size given a bound.
-
-### Block
-
-```c
-LapkaPrimitive *lapka_block_new(const char *text);
-void            lapka_block_set(LapkaPrimitive *p, const char *text);
-void            lapka_block_align(LapkaPrimitive *p, LapkaAnchor align);
-void            lapka_block_style(LapkaPrimitive *p, uint32_t fg, uint32_t bg,
-                                  uint16_t attrs);
-```
-
-Wraps at whitespace. No cursor. `handle` always returns `false`.
 
 ### List
 
@@ -403,6 +398,8 @@ The list copies its items; the caller's strings may be freed after the call.
 
 `lapka_list_attach_filter` makes the list filter its visible view by the text field's value on every `lapka_list_refilter` call. In `MANY` mode with a filter, `SPACE` goes into the text field and `TAB` toggles.
 
+`lapka_list_set_items` rebuilds the visible view as identity. With a filter attached, `lapka_list_refilter` reapplies it.
+
 `lapka_filter_fuzzy` is a subsequence matcher: `nvm` matches `neovim`.
 
 ### Text
@@ -417,13 +414,6 @@ void            lapka_text_set_prefix(LapkaPrimitive *p, const char *prefix);
 ```
 
 Cursor is a codepoint index. `masked` renders `*` per codepoint. `set` places the cursor at the end. `on_change` fires after every edit.
-
-### Prompt
-
-```c
-LapkaPrimitive *lapka_prompt_new(const char *hint);
-void            lapka_prompt_set(LapkaPrimitive *p, const char *hint);
-```
 
 ### Tabs
 
@@ -533,6 +523,8 @@ void            lapka_editor_set_cursor_visible(LapkaPrimitive *p, bool visible)
 
 Undo history is a stack of full-buffer snapshots capped at 200. Commands after an undo truncate the redo tail.
 
+`lapka_editor_save` writes every line followed by a newline. A file without a trailing newline gains one on the first save.
+
 ---
 
 ## Minimal program
@@ -585,6 +577,8 @@ int main(void) {
 ```
 
 Build: `cc -std=c99 -D_POSIX_C_SOURCE=200809L -O2 app.c liblapka.a -o app`
+
+The example uses `lapka_draw_text`, which is declared in `src/render/draw.h` and is not installed as a public header. `draw.h` also declares `lapka_draw_box`, `lapka_draw_hline`, `lapka_draw_hint`, `lapka_put_cp`, and `lapka_draw_str`, which the primitives use. To build this example against the current tree, copy `src/render/draw.h` into your include path or include the source.
 
 ---
 

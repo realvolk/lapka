@@ -79,7 +79,10 @@ static bool toast_tick(void *ud) {
 
 static bool toast_handle(void *ud, const LapkaEvent *ev) {
     ToastData *d = ud;
-    (void)ev;
+    if (ev->type == LAPKA_EVENT_KEY) {
+        d->done = 1;
+        return true;
+    }
     return d->done;
 }
 

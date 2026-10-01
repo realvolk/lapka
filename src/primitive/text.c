@@ -6,6 +6,7 @@
  */
 
 #include <lapka/primitive.h>
+#include <render/draw.h>
 #include "core/utf8.h"
 
 #include <stdlib.h>

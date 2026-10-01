@@ -55,12 +55,9 @@ static bool input_handle(void *ud, const LapkaEvent *ev) {
     if (ev->type == LAPKA_EVENT_KEY) {
         if (ev->key.code == LAPKA_KEY_ENTER) {
             const char *v = lapka_text_value(d->text);
-            if (v && v[0]) {
-                d->value = strdup(v);
-                d->done = 1;
-                return true;
-            }
-            return false;
+            d->value = strdup(v ? v : "");
+            d->done = 1;
+            return true;
         }
         if (ev->key.code == LAPKA_KEY_ESC) { d->cancelled = 1; return true; }
         if (ev->key.code == LAPKA_KEY_CODEPOINT && ev->key.ch == 0x03) {

@@ -6,6 +6,7 @@
  */
 
 #include <lapka/primitive.h>
+#include <render/draw.h>
 #include "core/utf8.h"
 
 #include <stdio.h>
@@ -74,13 +75,6 @@ static void clamp_scroll(ListData *d) {
     if (d->scroll > d->visible_count - 1) d->scroll = d->visible_count - 1;
 }
 
-static void put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
-                   uint32_t fg, uint32_t bg, uint16_t attrs) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    LapkaCell c = { cp, fg, bg, attrs };
-    buf[(size_t)y * (size_t)w + (size_t)x] = c;
-}
-
 static int put_str(LapkaCell *buf, int w, int h, int x, int y,
                    const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
                    int max_cols) {
@@ -97,7 +91,7 @@ static int put_str(LapkaCell *buf, int w, int h, int x, int y,
         if (cw == 0) continue;
         if (max_cols >= 0 && used + cw > max_cols) break;
         for (int i = 0; i < cw; i++) {
-            put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
+            lapka_put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
         }
         cx += cw;
         used += cw;
@@ -107,7 +101,7 @@ static int put_str(LapkaCell *buf, int w, int h, int x, int y,
 
 static int put_repeat(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
                       int n, uint32_t fg, uint32_t bg, uint16_t attrs) {
-    for (int i = 0; i < n; i++) put_cp(buf, w, h, x + i, y, cp, fg, bg, attrs);
+    for (int i = 0; i < n; i++) lapka_put_cp(buf, w, h, x + i, y, cp, fg, bg, attrs);
     return n;
 }
 

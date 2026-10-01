@@ -6,6 +6,7 @@
  */
 
 #include <lapka/primitive.h>
+#include <render/draw.h>
 #include "core/utf8.h"
 
 #include <stdlib.h>
@@ -24,37 +25,6 @@ static long long now_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static void put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
-                   uint32_t fg, uint32_t bg, uint16_t attrs) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    LapkaCell c = { cp, fg, bg, attrs };
-    buf[(size_t)y * (size_t)w + (size_t)x] = c;
-}
-
-static int draw_str(LapkaCell *buf, int w, int h, int x, int y,
-                    const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
-                    int max_cols) {
-    if (!s) return 0;
-    const uint8_t *p = (const uint8_t *)s;
-    int cx = x;
-    int used = 0;
-    while (*p) {
-        uint32_t cp;
-        int bytes = lapka_utf8_decode(p, 4, &cp);
-        if (bytes <= 0) break;
-        p += bytes;
-        int cw = lapka_cp_width(cp);
-        if (cw == 0) continue;
-        if (max_cols >= 0 && used + cw > max_cols) break;
-        for (int i = 0; i < cw; i++) {
-            put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
-        }
-        cx += cw;
-        used += cw;
-    }
-    return used;
-}
-
 static void notif_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
                        const LapkaTheme *theme) {
     NotificationData *d = p->data;
@@ -67,25 +37,25 @@ static void notif_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
 
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
-            put_cp(buf, w, h, x, y, ' ', 0, bg, 0);
+            lapka_put_cp(buf, w, h, x, y, ' ', 0, bg, 0);
         }
     }
 
     for (int x = 0; x < w; x++) {
-        put_cp(buf, w, h, x, 0, 0x2500, border, bg, 0);
-        put_cp(buf, w, h, x, h - 1, 0x2500, border, bg, 0);
+        lapka_put_cp(buf, w, h, x, 0, 0x2500, border, bg, 0);
+        lapka_put_cp(buf, w, h, x, h - 1, 0x2500, border, bg, 0);
     }
     for (int y = 0; y < h; y++) {
-        put_cp(buf, w, h, 0, y, 0x2502, border, bg, 0);
-        put_cp(buf, w, h, w - 1, y, 0x2502, border, bg, 0);
+        lapka_put_cp(buf, w, h, 0, y, 0x2502, border, bg, 0);
+        lapka_put_cp(buf, w, h, w - 1, y, 0x2502, border, bg, 0);
     }
-    put_cp(buf, w, h, 0, 0, 0x250C, border, bg, 0);
-    put_cp(buf, w, h, w - 1, 0, 0x2510, border, bg, 0);
-    put_cp(buf, w, h, 0, h - 1, 0x2514, border, bg, 0);
-    put_cp(buf, w, h, w - 1, h - 1, 0x2518, border, bg, 0);
+    lapka_put_cp(buf, w, h, 0, 0, 0x250C, border, bg, 0);
+    lapka_put_cp(buf, w, h, w - 1, 0, 0x2510, border, bg, 0);
+    lapka_put_cp(buf, w, h, 0, h - 1, 0x2514, border, bg, 0);
+    lapka_put_cp(buf, w, h, w - 1, h - 1, 0x2518, border, bg, 0);
 
     if (h > 2 && w > 4) {
-        draw_str(buf, w, h, 2, 1, d->message, fg, bg, 0, w - 4);
+        lapka_draw_str(buf, w, h, 2, 1, d->message, fg, bg, 0, w - 4);
     }
 }
 

@@ -29,3 +29,10 @@ typedef struct {
 
 int lapka_draw_hint(LapkaFramebuffer *fb, int y, const LapkaHintItem *items, int n,
                     uint32_t fg);
+
+int lapka_put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
+                 uint32_t fg, uint32_t bg, uint16_t attrs);
+
+int lapka_draw_str(LapkaCell *buf, int w, int h, int x, int y,
+                   const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
+                   int max_cols);

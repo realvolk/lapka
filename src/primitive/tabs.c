@@ -6,6 +6,7 @@
  */
 
 #include <lapka/primitive.h>
+#include <render/draw.h>
 #include "core/utf8.h"
 
 #include <stdlib.h>
@@ -20,37 +21,6 @@ typedef struct {
     int              active;
 } TabsData;
 
-static void put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
-                   uint32_t fg, uint32_t bg, uint16_t attrs) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    LapkaCell c = { cp, fg, bg, attrs };
-    buf[(size_t)y * (size_t)w + (size_t)x] = c;
-}
-
-static int draw_str(LapkaCell *buf, int w, int h, int x, int y,
-                    const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
-                    int max_cols) {
-    if (!s) return 0;
-    const uint8_t *p = (const uint8_t *)s;
-    int cx = x;
-    int used = 0;
-    while (*p) {
-        uint32_t cp;
-        int bytes = lapka_utf8_decode(p, 4, &cp);
-        if (bytes <= 0) break;
-        p += bytes;
-        int cw = lapka_cp_width(cp);
-        if (cw == 0) continue;
-        if (max_cols >= 0 && used + cw > max_cols) break;
-        for (int i = 0; i < cw; i++) {
-            put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
-        }
-        cx += cw;
-        used += cw;
-    }
-    return used;
-}
-
 static void tabs_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
                       const LapkaTheme *theme) {
     TabsData *d = p->data;
@@ -63,14 +33,14 @@ static void tabs_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
         uint16_t attrs = is_active ? LAPKA_ATTR_BOLD : 0;
 
         if (i > 0 && x + 3 < w) {
-            put_cp(buf, w, h, x, 0, ' ', 0, 0, 0);
+            lapka_put_cp(buf, w, h, x, 0, ' ', 0, 0, 0);
             x++;
-            put_cp(buf, w, h, x, 0, 0x2502, theme->muted, 0, 0);
+            lapka_put_cp(buf, w, h, x, 0, 0x2502, theme->muted, 0, 0);
             x++;
-            put_cp(buf, w, h, x, 0, ' ', 0, 0, 0);
+            lapka_put_cp(buf, w, h, x, 0, ' ', 0, 0, 0);
             x++;
         }
-        x += draw_str(buf, w, h, x, 0, d->labels[i], fg, 0, attrs, w - x);
+        x += lapka_draw_str(buf, w, h, x, 0, d->labels[i], fg, 0, attrs, w - x);
     }
 
     if (h > 1 && d->active >= 0 && d->active < d->count) {

@@ -41,7 +41,7 @@ static void print_usage(FILE *out) {
         "  spin               \"Title\" \"Body\" [--where=TL|TC|TR|LC|CC|RC|BL|BC|BR] [--hold N|enter|none] -- CMD...\n"
         "  password           \"Title\" \"Body\"\n"
         "  password-confirm   \"Title\" \"Body\" [--confirm-prompt P] [--tries N]\n"
-        "  hub                --spec=NAME [--in FILE] [--out FILE]\n"
+        "  hub                --in FILE --out FILE [--check]\n"
         "\n"
         "flags:\n"
         "  --version          print version\n"

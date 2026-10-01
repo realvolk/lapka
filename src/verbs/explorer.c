@@ -31,7 +31,6 @@ typedef enum {
     XPLORE_SEARCH,
     XPLORE_ACTION,
     XPLORE_CONFIRM_DELETE,
-    XPLORE_RENAME,
     XPLORE_VIEW,
     XPLORE_EDIT
 } ExploreMode;
@@ -46,11 +45,9 @@ typedef struct {
 
 typedef struct {
     const char *start;
-    const char *title;
     int         want_dir;
 
     char       *cwd;
-    Entry      *entries;
     int         entry_count;
     int         cursor;
     int         scroll;
@@ -68,7 +65,6 @@ typedef struct {
     int         action_cursor;
 
     LapkaPrimitive *search;
-    LapkaPrimitive *rename;
     LapkaPrimitive *pager;
     LapkaPrimitive *editor;
 
@@ -79,6 +75,7 @@ typedef struct {
     int      exit_code;
     char    *result;
     int      done;
+    int      esc_pending;
 
     LapkaPrimitive *toast;
     LapkaLayer     *toast_layer;
@@ -160,14 +157,18 @@ static void rebuild_filter(ExploreData *d) {
     d->filtered = NULL;
     d->filtered_count = 0;
 
+    d->filtered = malloc((size_t)(d->all_count ? d->all_count : 1) * sizeof(int));
+    if (!d->filtered) {
+        d->entry_count = 0;
+        d->cursor = 0;
+        d->scroll = 0;
+        return;
+    }
+
     if (!d->search_query[0]) {
-        d->filtered = malloc((size_t)(d->all_count ? d->all_count : 1) * sizeof(int));
-        if (!d->filtered) return;
         for (int i = 0; i < d->all_count; i++) d->filtered[i] = i;
         d->filtered_count = d->all_count;
     } else {
-        d->filtered = malloc((size_t)(d->all_count ? d->all_count : 1) * sizeof(int));
-        if (!d->filtered) return;
         for (int i = 0; i < d->all_count; i++) {
             if (fuzzy_match_ci(d->all_entries[i].name, d->search_query)) {
                 d->filtered[d->filtered_count++] = i;
@@ -300,37 +301,6 @@ static int file_size_str(off_t size, char *out, size_t cap) {
     return snprintf(out, cap, "%.1f%s", v, unit);
 }
 
-static void put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
-                   uint32_t fg, uint32_t bg, uint16_t attrs) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    LapkaCell c = { cp, fg, bg, attrs };
-    buf[(size_t)y * (size_t)w + (size_t)x] = c;
-}
-
-static int draw_str(LapkaCell *buf, int w, int h, int x, int y,
-                    const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
-                    int max_cols) {
-    if (!s) return 0;
-    const uint8_t *p = (const uint8_t *)s;
-    int cx = x;
-    int used = 0;
-    while (*p) {
-        uint32_t cp;
-        int bytes = lapka_utf8_decode(p, 4, &cp);
-        if (bytes <= 0) break;
-        p += bytes;
-        int cw = lapka_cp_width(cp);
-        if (cw == 0) continue;
-        if (max_cols >= 0 && used + cw > max_cols) break;
-        for (int i = 0; i < cw; i++) {
-            put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
-        }
-        cx += cw;
-        used += cw;
-    }
-    return used;
-}
-
 static void draw_browser(LapkaFramebuffer *fb, ExploreData *d,
                          const LapkaTheme *theme) {
     char header[PATH_MAX + 16];
@@ -377,8 +347,8 @@ static void draw_browser(LapkaFramebuffer *fb, ExploreData *d,
             glyph = emoji_ok ? "  " : "     ";
             glyph_w = emoji_ok ? 2 : 5;
         }
-        x += draw_str(fb->cur, fb->w, fb->h, x, y, glyph, fg, 0, attrs, glyph_w);
-        x += draw_str(fb->cur, fb->w, fb->h, x, y, " ", fg, 0, attrs, 1);
+        x += lapka_draw_str(fb->cur, fb->w, fb->h, x, y, glyph, fg, 0, attrs, glyph_w);
+        x += lapka_draw_str(fb->cur, fb->w, fb->h, x, y, " ", fg, 0, attrs, 1);
 
         char line[PATH_MAX + 32];
         if (d->show_sizes && !e->is_dir) {
@@ -390,12 +360,12 @@ static void draw_browser(LapkaFramebuffer *fb, ExploreData *d,
         } else {
             snprintf(line, sizeof(line), "%s", e->name);
         }
-        draw_str(fb->cur, fb->w, fb->h, x, y, line, fg, 0, attrs, fb->w - x);
+        lapka_draw_str(fb->cur, fb->w, fb->h, x, y, line, fg, 0, attrs, fb->w - x);
     }
 
     if (d->filtered_count == 0) {
         const char *msg = d->search_query[0] ? "(no matches)" : "(empty)";
-        draw_str(fb->cur, fb->w, fb->h, 0, top, msg,
+        lapka_draw_str(fb->cur, fb->w, fb->h, 0, top, msg,
                  theme->muted, 0, 0, fb->w);
     }
 
@@ -407,7 +377,9 @@ static void draw_browser(LapkaFramebuffer *fb, ExploreData *d,
 
 static void draw_action_menu(LapkaFramebuffer *fb, ExploreData *d,
                              const LapkaTheme *theme) {
-    Entry *e = d->cursor < d->entry_count ? &d->entries[d->cursor] : NULL;
+    Entry *e = d->cursor < d->entry_count
+        ? &d->all_entries[d->filtered[d->cursor]]
+        : NULL;
     if (!e) return;
 
     int want_dir = d->want_dir && e->is_dir;
@@ -423,26 +395,26 @@ static void draw_action_menu(LapkaFramebuffer *fb, ExploreData *d,
     LapkaCell *buf = fb->cur;
     for (int y = my; y < my + mh; y++) {
         for (int x = mx; x < mx + mw; x++) {
-            put_cp(buf, fb->w, fb->h, x, y, ' ', 0, theme->modal_bg, 0);
+            lapka_put_cp(buf, fb->w, fb->h, x, y, ' ', 0, theme->modal_bg, 0);
         }
     }
 
     for (int x = mx; x < mx + mw; x++) {
-        put_cp(buf, fb->w, fb->h, x, my, 0x2500, theme->modal_border, theme->modal_bg, 0);
-        put_cp(buf, fb->w, fb->h, x, my + mh - 1, 0x2500, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(buf, fb->w, fb->h, x, my, 0x2500, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(buf, fb->w, fb->h, x, my + mh - 1, 0x2500, theme->modal_border, theme->modal_bg, 0);
     }
     for (int y = my; y < my + mh; y++) {
-        put_cp(buf, fb->w, fb->h, mx, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
-        put_cp(buf, fb->w, fb->h, mx + mw - 1, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(buf, fb->w, fb->h, mx, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(buf, fb->w, fb->h, mx + mw - 1, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
     }
-    put_cp(buf, fb->w, fb->h, mx, my, 0x250C, theme->modal_border, theme->modal_bg, 0);
-    put_cp(buf, fb->w, fb->h, mx + mw - 1, my, 0x2510, theme->modal_border, theme->modal_bg, 0);
-    put_cp(buf, fb->w, fb->h, mx, my + mh - 1, 0x2514, theme->modal_border, theme->modal_bg, 0);
-    put_cp(buf, fb->w, fb->h, mx + mw - 1, my + mh - 1, 0x2518, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(buf, fb->w, fb->h, mx, my, 0x250C, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(buf, fb->w, fb->h, mx + mw - 1, my, 0x2510, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(buf, fb->w, fb->h, mx, my + mh - 1, 0x2514, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(buf, fb->w, fb->h, mx + mw - 1, my + mh - 1, 0x2518, theme->modal_border, theme->modal_bg, 0);
 
     char title[256];
     snprintf(title, sizeof(title), " %s ", e->name);
-    draw_str(buf, fb->w, fb->h, mx + 2, my, title,
+    lapka_draw_str(buf, fb->w, fb->h, mx + 2, my, title,
              theme->modal_title, theme->modal_bg, LAPKA_ATTR_BOLD, mw - 4);
 
     for (int i = 0; i < n; i++) {
@@ -451,7 +423,7 @@ static void draw_action_menu(LapkaFramebuffer *fb, ExploreData *d,
         int sel = (i == d->action_cursor);
         char line[64];
         snprintf(line, sizeof(line), "%s %s", sel ? ">" : " ", label);
-        draw_str(buf, fb->w, fb->h, mx + 2, my + 2 + i, line,
+        lapka_draw_str(buf, fb->w, fb->h, mx + 2, my + 2 + i, line,
                  sel ? theme->accent : 0, theme->modal_bg,
                  sel ? LAPKA_ATTR_BOLD : 0, mw - 4);
     }
@@ -468,37 +440,37 @@ static void draw_confirm(LapkaFramebuffer *fb, ExploreData *d,
 
     for (int y = my; y < my + mh; y++) {
         for (int x = mx; x < mx + mw; x++) {
-            put_cp(fb->cur, fb->w, fb->h, x, y, ' ', 0, theme->modal_bg, 0);
+            lapka_put_cp(fb->cur, fb->w, fb->h, x, y, ' ', 0, theme->modal_bg, 0);
         }
     }
     for (int x = mx; x < mx + mw; x++) {
-        put_cp(fb->cur, fb->w, fb->h, x, my, 0x2500, theme->modal_border, theme->modal_bg, 0);
-        put_cp(fb->cur, fb->w, fb->h, x, my + mh - 1, 0x2500, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(fb->cur, fb->w, fb->h, x, my, 0x2500, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(fb->cur, fb->w, fb->h, x, my + mh - 1, 0x2500, theme->modal_border, theme->modal_bg, 0);
     }
     for (int y = my; y < my + mh; y++) {
-        put_cp(fb->cur, fb->w, fb->h, mx, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
-        put_cp(fb->cur, fb->w, fb->h, mx + mw - 1, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(fb->cur, fb->w, fb->h, mx, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
+        lapka_put_cp(fb->cur, fb->w, fb->h, mx + mw - 1, y, 0x2502, theme->modal_border, theme->modal_bg, 0);
     }
-    put_cp(fb->cur, fb->w, fb->h, mx, my, 0x250C, theme->modal_border, theme->modal_bg, 0);
-    put_cp(fb->cur, fb->w, fb->h, mx + mw - 1, my, 0x2510, theme->modal_border, theme->modal_bg, 0);
-    put_cp(fb->cur, fb->w, fb->h, mx, my + mh - 1, 0x2514, theme->modal_border, theme->modal_bg, 0);
-    put_cp(fb->cur, fb->w, fb->h, mx + mw - 1, my + mh - 1, 0x2518, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(fb->cur, fb->w, fb->h, mx, my, 0x250C, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(fb->cur, fb->w, fb->h, mx + mw - 1, my, 0x2510, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(fb->cur, fb->w, fb->h, mx, my + mh - 1, 0x2514, theme->modal_border, theme->modal_bg, 0);
+    lapka_put_cp(fb->cur, fb->w, fb->h, mx + mw - 1, my + mh - 1, 0x2518, theme->modal_border, theme->modal_bg, 0);
 
     const char *title = d->confirm_stage == 0
         ? " Delete? "
         : " Are you sure? ";
-    draw_str(fb->cur, fb->w, fb->h, mx + 2, my, title,
+    lapka_draw_str(fb->cur, fb->w, fb->h, mx + 2, my, title,
              theme->modal_title, theme->modal_bg, LAPKA_ATTR_BOLD, mw - 4);
 
     char line[512];
     snprintf(line, sizeof(line), " %s", d->confirm_name);
-    draw_str(fb->cur, fb->w, fb->h, mx + 2, my + 2, line,
+    lapka_draw_str(fb->cur, fb->w, fb->h, mx + 2, my + 2, line,
              theme->title, theme->modal_bg, 0, mw - 4);
 
     const char *hint = d->confirm_stage == 0
         ? " [Y]es  [N]o "
         : " Really delete? [Y]es / [N]o ";
-    draw_str(fb->cur, fb->w, fb->h, mx + 2, my + mh - 3, hint,
+    lapka_draw_str(fb->cur, fb->w, fb->h, mx + 2, my + mh - 3, hint,
              theme->muted, theme->modal_bg, 0, mw - 4);
 }
 
@@ -509,7 +481,7 @@ static void xplore_draw(void *ud, LapkaFramebuffer *fb) {
     if (d->mode == XPLORE_VIEW && d->pager) {
         char header[PATH_MAX + 16];
         snprintf(header, sizeof(header), " -- %s -- ",
-                 d->entries[d->cursor].name);
+                 d->all_entries[d->filtered[d->cursor]].name);
         LapkaRect hr = { 0, 0, fb->w, 1 };
         lapka_draw_text(fb, hr, header, theme->title, 0, LAPKA_ATTR_BOLD);
         if (fb->h > 1) {
@@ -519,7 +491,7 @@ static void xplore_draw(void *ud, LapkaFramebuffer *fb) {
     } else if (d->mode == XPLORE_EDIT && d->editor) {
         char header[PATH_MAX + 16];
         snprintf(header, sizeof(header), " -- Edit %s -- ",
-                 d->entries[d->cursor].name);
+                 d->all_entries[d->filtered[d->cursor]].name);
         LapkaRect hr = { 0, 0, fb->w, 1 };
         lapka_draw_text(fb, hr, header, theme->title, 0, LAPKA_ATTR_BOLD);
         if (fb->h > 1) {
@@ -612,6 +584,7 @@ static void action_edit(ExploreData *d) {
     lapka_editor_open(d->editor, e->full);
     lapka_editor_set_hint(d->editor,
         "^S save  ^Z undo  ^Y redo  ^D delete-line  esc done");
+    d->esc_pending = 0;
     d->mode = XPLORE_EDIT;
 }
 
@@ -688,7 +661,7 @@ static bool browse_key(ExploreData *d, const LapkaEvent *ev) {
             if (d->entry_count == 0) return true;
             int idx = d->filtered[d->cursor];
             Entry *e = &d->all_entries[idx];
-            if (e->is_dir) {
+            if (e->is_dir && !d->want_dir) {
                 if (load_dir(d, e->full) != 0) {
                     show_toast(d, "Cannot enter directory.", 2000);
                 }
@@ -739,7 +712,9 @@ static bool browse_key(ExploreData *d, const LapkaEvent *ev) {
 static bool action_key(ExploreData *d, const LapkaEvent *ev) {
     if (ev->type != LAPKA_EVENT_KEY) return false;
 
-    Entry *e = d->cursor < d->entry_count ? &d->entries[d->cursor] : NULL;
+    Entry *e = d->cursor < d->entry_count
+        ? &d->all_entries[d->filtered[d->cursor]]
+        : NULL;
     if (!e) { d->mode = XPLORE_BROWSE; return true; }
 
     int want_dir = d->want_dir && e->is_dir;
@@ -838,20 +813,24 @@ static bool edit_key(ExploreData *d, const LapkaEvent *ev) {
     if (!d->editor) return false;
     if (ev->type == LAPKA_EVENT_KEY) {
         if (ev->key.code == LAPKA_KEY_ESC) {
-            if (lapka_editor_is_dirty(d->editor)) {
-                show_toast(d, "Unsaved changes. Ctrl-S to save.", 2000);
+            if (lapka_editor_is_dirty(d->editor) && !d->esc_pending) {
+                d->esc_pending = 1;
+                show_toast(d, "Unsaved changes. Ctrl-S to save, Esc again to discard.", 2000);
                 return true;
             }
+            d->esc_pending = 0;
             d->mode = XPLORE_BROWSE;
             return true;
         }
         if (ev->key.code == LAPKA_KEY_CODEPOINT && ev->key.ch == 0x13) {
             int rc = lapka_editor_save(d->editor);
+            d->esc_pending = 0;
             show_toast(d, rc == 0 ? "Saved." : "Save failed.",
                        rc == 0 ? 1500 : 2000);
             return true;
         }
     }
+    d->esc_pending = 0;
     d->editor->handle(d->editor, ev);
     return true;
 }
@@ -900,7 +879,6 @@ int cmd_explorer(int argc, char **argv) {
     d.show_sizes = true;
 
     const char *start = NULL;
-    const char *title = "Explorer";
 
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i];
@@ -911,10 +889,7 @@ int cmd_explorer(int argc, char **argv) {
             return 3;
         }
         if (!start) start = a;
-        else title = a;
     }
-
-    d.title = title;
 
     if (!start) {
         const char *home = getenv("HOME");
@@ -943,7 +918,6 @@ int cmd_explorer(int argc, char **argv) {
     }
 
     if (d.search) lapka_primitive_free(d.search);
-    if (d.rename) lapka_primitive_free(d.rename);
     if (d.pager) lapka_primitive_free(d.pager);
     if (d.editor) lapka_primitive_free(d.editor);
     if (d.toast) lapka_primitive_free(d.toast);

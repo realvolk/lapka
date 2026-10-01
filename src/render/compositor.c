@@ -13,7 +13,7 @@
 static int layer_cmp(const void *a, const void *b) {
     const LapkaLayer *la = *(const LapkaLayer *const *)a;
     const LapkaLayer *lb = *(const LapkaLayer *const *)b;
-    return la->z - lb->z;
+    return (la->z > lb->z) - (la->z < lb->z);
 }
 
 static void blend_layer(LapkaFramebuffer *fb, LapkaLayer *l) {

@@ -25,6 +25,7 @@ typedef struct {
     int             cursor_visible;
     long long       last_blink_ms;
     int             readonly;
+    int             esc_pending;
 
     LapkaPrimitive *toast;
     LapkaLayer     *toast_layer;
@@ -165,9 +166,10 @@ static bool handle(void *ud, const LapkaEvent *ev) {
 
     if (ev->type == LAPKA_EVENT_KEY) {
         if (ev->key.code == LAPKA_KEY_ESC) {
-            if (lapka_editor_is_dirty(d->editor) && !d->readonly) {
+            if (lapka_editor_is_dirty(d->editor) && !d->readonly && !d->esc_pending) {
+                d->esc_pending = 1;
                 show_toast(d, "Unsaved changes. Ctrl-S to save, Esc again to discard.", 3000);
-                if (d->toast) return false;
+                return false;
             }
             d->exit_code = 0;
             return true;
@@ -184,9 +186,13 @@ static bool handle(void *ud, const LapkaEvent *ev) {
         if (!d->readonly && ev->key.code == LAPKA_KEY_CODEPOINT &&
             ev->key.ch == 0x13) {
             int rc = lapka_editor_save(d->editor);
+            d->esc_pending = 0;
             if (rc != 0) show_toast(d, "Save failed.", 2000);
             else show_toast(d, "Saved.", 1500);
             return false;
+        }
+        if (ev->key.code != LAPKA_KEY_ESC) {
+            d->esc_pending = 0;
         }
     }
 
@@ -235,6 +241,8 @@ int cmd_editor(int argc, char **argv) {
     if (path && !file_is_writable(path)) {
         d.readonly = 1;
     }
+
+    d.esc_pending = 0;
 
     LapkaInitOptions opts = { 1, 0, 1, 0 };
     LapkaRunCallbacks cb = { draw, handle, tick, &d };

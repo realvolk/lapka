@@ -192,6 +192,9 @@ static int parse_escape(int fd, LapkaEvent *out) {
                 }
                 c4 = c5;
             }
+            while (c4 != -2 && c4 != -1 && (c4 < 0x40 || c4 > 0x7E)) {
+                c4 = read_one(fd, 25);
+            }
             if (c4 == -2 || c4 == -1) {
                 out->type = LAPKA_EVENT_KEY;
                 out->key.code = LAPKA_KEY_UNKNOWN;

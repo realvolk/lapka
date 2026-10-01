@@ -1,6 +1,6 @@
 # lapka — specification
 
-Version 1.6 — draft
+Version 1.7 — draft
 
 ---
 
@@ -117,7 +117,7 @@ typedef struct {
 
 `FULL` — equal to the parent bound on this axis. `val` ignored.
 
-`FIXED` — exactly `val` cells. Negative `val` treated as zero.
+`FIXED` — `val` cells, clamped to the parent bound. Negative `val` treated as zero.
 
 `PERCENT` — `parent * val / 100` cells, rounded down. `val` clamped to `[0, 100]`.
 
@@ -233,6 +233,8 @@ Layers are unbounded. Each owns its buffer of `rect.w * rect.h` cells.
 `z` is the stacking order. Higher is on top.
 
 `userdata` is opaque to the compositor and is owned by the caller.
+
+`lapka_layer_free` calls the layer's `free` callback if set, then frees `buf` and the layer itself. The callback is responsible for `userdata` only. It must not free `buf` or the layer.
 
 ### 6.2 Blend
 
@@ -374,13 +376,15 @@ Called from the normal exit path, from an `atexit` handler as a backstop, and fr
 
 `lapka_signals_save` clears `s_restored` on every call, so a second `lapka_term_init` after a `lapka_term_shutdown` re-arms the teardown.
 
+The symbol in `src/term/signals.c` is `lapka_term_restore`.
+
 ### 7.3 Signals
 
 `ISIG` is cleared. Keyboard Ctrl-C arrives as byte `0x03`, not as a signal. Every verb treats `0x03` as user cancel and exits 1. The parent bash script receives exit 1, not `SIGINT`, and its `trap 'installer_abort' INT TERM` does not fire.
 
 Handlers are installed for `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGSEGV`, `SIGABRT`, `SIGPIPE`. These fire only when a signal is delivered externally (via `kill`, or when an SSH session disconnects and `SIGHUP` is sent).
 
-Each handler calls `lapka_restore_terminal()` and then `_exit(128 + signo)`.
+Each handler calls `lapka_term_restore()` and then `_exit(128 + signo)`.
 
 Only async-signal-safe calls inside the handler. `write` and `tcsetattr` only.
 
@@ -478,7 +482,11 @@ int lapka_flush(LapkaFramebuffer *fb, int tty_fd, int color_depth);
 
 Diff `cur` against `prev`. Emit cursor-position escapes only where cells differ. Emit SGR only when the style changes between adjacent cells.
 
-**Continuation cells are never emitted.** A cell whose `cp == 0` and whose preceding cell has a width-2 codepoint is a continuation cell. The terminal already advanced past it when it drew the wide codepoint. Emitting a space for a continuation cell would shift the row right by one column for every wide codepoint in the row. The loop tracks this: after emitting a width-2 codepoint, the next cell is skipped.
+**Continuation cells are never emitted.** A cell whose `cp == 0` and whose preceding cell has a width-2 codepoint is a continuation cell. The terminal already advanced past it when it drew the wide codepoint. Emitting a space for a continuation cell would shift the row right by one column for every wide codepoint in the row. The loop tracks this: after emitting a width-2 codepoint, the next cell is skipped. The `prev_was_wide` flag is per-row and resets at the start of each row.
+
+Cells containing U+0009 (tab) are normalized to U+0020 (space) at emit time. A raw tab byte written to the terminal would move the cursor to the next tab stop, not occupy one cell.
+
+Cell contents with `cp == 0` are emitted as a single space. This includes empty cells and cells the framebuffer has not touched, unless the previous cell was a width-2 lead, in which case the cell is skipped entirely.
 
 Write the buffer via a loop that retries until all bytes are written or `write` returns `-1` or `0`. A partial write is not an error; it means the loop continues.
 
@@ -494,7 +502,11 @@ Synchronized output is assumed supported unless `TERM` is `dumb`, `linux`, `vt10
 
 ### 8.3 Color quantization
 
-Cells are stored in truecolor. At flush, quantize to the terminal's color depth:
+Cells are stored in truecolor and emitted as truecolor SGR (`38;2;R;G;B` / `48;2;R;G;B`) regardless of the `color_depth` argument.
+
+On terminals that do not support truecolor (`TERM=linux`, `vt100`, `vt102`, `dumb`), the emitted SGR is not understood and the terminal falls back to default colors. On 256-color and 16-color terminals, most modern emulators downconvert gracefully; older ones may not.
+
+The specified behavior:
 
 - Truecolor — emit as-is.
 - 256 — nearest match in the 256-color palette, distance = squared Euclidean in sRGB.
@@ -510,6 +522,8 @@ Quantization is in `flush.c`, not in the compositor. Layer buffers are always fu
 Text wraps at whitespace boundaries. A word longer than the available width is hard-broken at the cell boundary. Whitespace at wrap points is consumed.
 
 A word is a maximal run of non-whitespace codepoints. CJK ideographs are treated as single-codepoint words, so they wrap at every codepoint boundary.
+
+`lapka_draw_text` in `src/render/draw.c` wraps at cell boundaries. The whitespace rule above applies to primitives that do their own wrapping.
 
 ### 8.5 Output channels
 
@@ -534,13 +548,13 @@ int lapka_utf8_encode(uint32_t cp, uint8_t *out);
 `lapka_cp_width` returns 0, 1, or 2:
 
 - Codepoints below U+0020, U+007F, and U+0080–U+009F — width 0, not rendered.
-- U+0009 (tab) — width 1, rendered as one space. No tab-stop expansion.
-- Combining marks (U+0300–U+036F, U+1AB0–U+1AFF, U+1DC0–U+1DFF, U+20D0–U+20FF, U+FE20–U+FE2F) — width 0.
+- U+0009 (tab) — width 1, rendered as one space. No tab-stop expansion. The flush layer normalizes the emitted codepoint to U+0020.
+- Combining marks (U+0300–U+036F, U+3099–U+309A, U+1AB0–U+1AFF, U+1DC0–U+1DFF, U+20D0–U+20FF, U+FE20–U+FE2F) — width 0.
 - Zero-width characters (U+200B, U+200C, U+200D, U+2060, U+FEFF) — width 0.
 - East Asian Wide and Fullwidth (Unicode `EastAsianWidth.txt` classes W and F) — width 2.
 - Everything else — width 1.
 
-Width table is a sorted array of `{start, end, width}` ranges. Binary search. No allocation.
+The width table is a static array of `{start, end}` ranges consulted by a linear scan. It is not derived directly from `EastAsianWidth.txt`; the wide range list covers the common CJK, Hangul, and emoji blocks. No allocation.
 
 No grapheme cluster support. Each codepoint occupies its own cell, or zero cells, or two cells. ZWJ sequences render as their individual codepoints.
 
@@ -550,13 +564,13 @@ No grapheme cluster support. Each codepoint occupies its own cell, or zero cells
 
 ### 10.1 Read loop
 
-One `poll` on the tty fd with a 30 ms timeout. Read up to 4096 bytes into a ring buffer. Parse events from the buffer.
+Bytes are read one at a time from the tty fd. Each byte is preceded by a `poll` with a caller-specified timeout. There is no ring buffer; the parser reads directly from the fd.
 
-If the buffer starts with `\033`, attempt to parse an escape sequence. If the sequence is incomplete and the buffer has room, continue polling. If the sequence is malformed, treat the initial byte as a lone `ESC` key.
+If the first byte is `\033`, an escape sequence is parsed. If the sequence is incomplete within 25 ms, the initial `\033` is treated as a lone `ESC` key. If the sequence is malformed, the parser emits `LAPKA_KEY_UNKNOWN` rather than a lone `ESC`.
 
-If the buffer starts with a UTF-8 lead byte, decode one codepoint. On invalid input, emit U+FFFD.
+If the first byte is a UTF-8 lead byte, the remaining bytes of the codepoint are read. If the sequence is invalid, the parser returns an error rather than emitting U+FFFD.
 
-Otherwise, emit a single-byte codepoint.
+Otherwise, the byte is emitted as a single-byte codepoint.
 
 There is only one waiting model. `poll` handles all waiting. `VMIN` and `VTIME` are zero.
 
@@ -566,9 +580,15 @@ A solitary `ESC` is only treated as the Escape key if no further bytes arrive wi
 
 ### 10.3 Bracketed paste
 
+The terminal is configured to send `CSI 200~` and `CSI 201~` around pasted data when a verb requests `paste`, but the input parser does not accumulate the pasted bytes into a single event.
+
+A paste arrives as a stream: `CSI 200~` parses as `LAPKA_KEY_UNKNOWN`, followed by one codepoint event per pasted character, followed by `CSI 201~` which also parses as `LAPKA_KEY_UNKNOWN`. Verbs that accept text see the pasted characters as if they had been typed.
+
+The specified behavior:
+
 `CSI 200~` starts paste accumulation. All input until `CSI 201~` is collected into a single `LAPKA_EVENT_PASTE` with the pasted bytes as one UTF-8 string.
 
-The paste buffer is a growable byte buffer, not the ring buffer. It grows to fit the paste. There is no fixed cap.
+The paste buffer is a growable byte buffer, not a ring buffer. It grows to fit the paste. There is no fixed cap.
 
 Pasted data is truncated at the first U+0000. The remainder is discarded.
 
@@ -660,7 +680,7 @@ typedef struct {
 
 Byte `0x03` (Ctrl-C) arrives as `{LAPKA_KEY_CODEPOINT, 0x03, LAPKA_MOD_CTRL}`. Every verb treats it as user cancel.
 
-`LAPKA_EVENT_PASTE` data is NUL-terminated and valid UTF-8. `len` excludes the NUL.
+`LAPKA_EVENT_PASTE`, `LAPKA_EVENT_FOCUS_IN`, and `LAPKA_EVENT_FOCUS_OUT` are declared but not produced by the input layer.
 
 Mouse `x` and `y` are screen-absolute, measured in cells. Verbs translate to their own layer's coordinate space before routing to primitives.
 
@@ -672,10 +692,8 @@ All primitives share a common header:
 
 ```c
 typedef enum {
-    LAPKA_PRIMITIVE_BLOCK,
     LAPKA_PRIMITIVE_LIST,
     LAPKA_PRIMITIVE_TEXT,
-    LAPKA_PRIMITIVE_PROMPT,
     LAPKA_PRIMITIVE_TABS,
     LAPKA_PRIMITIVE_PROGRESS,
     LAPKA_PRIMITIVE_SUMMARY,
@@ -701,24 +719,9 @@ Every primitive is a self-contained object with its own state. A verb composes p
 
 Primitives that need a stride-independent sub-buffer must be drawn into a temporary buffer of the target width, then copied row by row into the destination. Direct sub-buffer drawing only works when the destination rows are contiguous at the same stride.
 
-### 11.1 Block
+The list of primitives is closed: there is no `LAPKA_PRIMITIVE_BLOCK` and no `LAPKA_PRIMITIVE_PROMPT`.
 
-A multi-line static text display. Used by `msg` and `yesno` bodies.
-
-```c
-LapkaPrimitive *lapka_block_new(const char *text);
-void            lapka_block_set(LapkaPrimitive *p, const char *text);
-void            lapka_block_align(LapkaPrimitive *p, LapkaAnchor align);
-void            lapka_block_style(LapkaPrimitive *p, uint32_t fg, uint32_t bg, uint16_t attrs);
-```
-
-Wraps at word boundaries per section 8.4. No editing, no cursor.
-
-`handle` always returns `false`.
-
-Measure: wrapped line count at `bound.w`, clipped to `bound.h`; max wrapped line width.
-
-### 11.2 List
+### 11.1 List
 
 ```c
 typedef enum {
@@ -780,13 +783,15 @@ In `LAPKA_SELECT_MANY`, `result_count` is the number of checked items. `result(i
 
 The default matcher is case-insensitive substring match. `lapka_filter_fuzzy` is a subsequence matcher and is used by the `filter` verb.
 
-The filter hook is optional. When a `LapkaText` is attached via `lapka_list_attach_filter`, the list filters its items by the text's value on every `lapka_list_refilter` call. The list keeps a `visible` array of indices into the item list. All cursor operations and result lookups operate on the visible array. `lapka_list_set_items` and `lapka_list_refilter` rebuild it.
+The filter hook is optional. When a `LapkaText` is attached via `lapka_list_attach_filter`, the list filters its items by the text's value on every `lapka_list_refilter` call. The list keeps a `visible` array of indices into the item list. All cursor operations and result lookups operate on the visible array. `lapka_list_refilter` rebuilds it.
+
+`lapka_list_set_items` rebuilds `visible` as an identity mapping. If a filter is attached, the caller must call `lapka_list_refilter` afterwards to reapply it.
 
 In `MANY` mode, `SPACE` toggles the cursor item unless a filter is attached, in which case `SPACE` is passed through to the filter and `TAB` toggles.
 
 Measure: `min(visible_count, bound.h)` rows; max visible item width clipped to `bound.w`.
 
-### 11.3 Text
+### 11.2 Text
 
 ```c
 LapkaPrimitive *lapka_text_new(const char *initial, bool masked);
@@ -800,7 +805,7 @@ State: UTF-8 buffer, cursor, mask flag, prefix string.
 
 Cursor is a codepoint index, not a byte offset. Text is stored as UTF-8 but cursor arithmetic is codepoint-based.
 
-Masked mode renders `*` per codepoint.
+Masked mode renders `*` per codepoint. The cell at the cursor position is rendered as a reverse-video space regardless of mask mode.
 
 `lapka_text_set` places the cursor at the end of the new value.
 
@@ -810,20 +815,7 @@ Masked mode renders `*` per codepoint.
 
 Measure: 1 row; prefix width plus value width clipped to `bound.w`.
 
-### 11.4 Prompt
-
-```c
-LapkaPrimitive *lapka_prompt_new(const char *hint);
-void            lapka_prompt_set(LapkaPrimitive *p, const char *hint);
-```
-
-State: a single-line hint string.
-
-`handle` always returns `false`.
-
-Measure: 1 row.
-
-### 11.5 Tabs
+### 11.3 Tabs
 
 A container that hosts N primitives, shows one at a time, and forwards input to the active one.
 
@@ -843,7 +835,7 @@ The tab bar is drawn on the first row. Children are drawn on the remaining rows.
 
 Count is clamped to `[1, 9]`. Measure is the tab bar width plus the active child's measured height plus one.
 
-### 11.6 Progress
+### 11.4 Progress
 
 A determinate bar. The caller sets the value.
 
@@ -862,7 +854,7 @@ The bar occupies one row when there is no message, two rows when there is. `valu
 
 Measure: 40 columns wide by 1 or 2 rows.
 
-### 11.7 Summary
+### 11.5 Summary
 
 A scrolling text body. Used by review screens and log views.
 
@@ -883,7 +875,7 @@ Handles `UP`, `DOWN`, `PAGEUP`, `PAGEDOWN`, `HOME`, `END`, `j`, `k`.
 
 Measure: max line width clipped to `bound.w`; line count clipped to `bound.h`.
 
-### 11.8 Tree
+### 11.6 Tree
 
 A hierarchical list with expand/collapse. Flat-node storage.
 
@@ -908,7 +900,7 @@ The cursor moves over the visible subset: top-level nodes, plus descendants of a
 
 Measure: max indented label width clipped to `bound.w`; visible count clipped to `bound.h`.
 
-### 11.9 Notification
+### 11.7 Notification
 
 An auto-expiring message box.
 
@@ -924,7 +916,7 @@ bool            lapka_notification_expired(LapkaPrimitive *p);
 
 Measure: message width plus six columns, minimum 20; 3 rows.
 
-### 11.10 Pager
+### 11.8 Pager
 
 A scrollable text view with search.
 
@@ -946,11 +938,11 @@ Lines are wrapped. The last visual row of the primitive is reserved for a hint o
 
 Keys: `UP`/`DOWN`, `PAGEUP`/`PAGEDOWN`, `HOME`/`END`, `j`/`k`, `g`/`G`, `b`/`SPACE` for page up/down, `n`/`N` for next/previous match, `/` to start a search (when enabled). While searching, `ENTER` commits, `ESC` cancels, everything else goes into the field.
 
-Match highlighting draws the matched substring in `theme.accent` with `LAPKA_ATTR_BOLD`. Matches that straddle a wrap boundary are highlighted only on the first visual row.
+Match highlighting draws the matched substring in `theme.accent` with `LAPKA_ATTR_BOLD`. Matches that straddle a wrap boundary are highlighted only on the first visual row. The current implementation does not highlight split matches.
 
 Measure: max line width clipped to `bound.w`; total wrapped rows plus one clipped to `bound.h`.
 
-### 11.11 Editor
+### 11.9 Editor
 
 A multi-line text editor with undo and redo.
 
@@ -971,13 +963,15 @@ void            lapka_editor_set_cursor_visible(LapkaPrimitive *p, bool visible)
 
 `lapka_editor_text` returns a newly allocated string the caller must `free`. It is valid until the caller frees it. The next call returns a fresh allocation.
 
-Keys: arrow keys, `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, `ENTER`, `BACKSPACE`, `DELETE`, printable codepoints. `Ctrl-S` is handled by the caller, not the primitive. `Ctrl-Z` undoes, `Ctrl-Y` redoes, `Ctrl-D` deletes the current line.
+Keys: arrow keys, `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, `ENTER`, `BACKSPACE`, `DELETE`, printable codepoints, and tab (inserted as `\t`). `Ctrl-S` is handled by the caller, not the primitive. `Ctrl-Z` undoes, `Ctrl-Y` redoes, `Ctrl-D` deletes the current line.
 
 Undo history is a stack of full-buffer snapshots capped at 200 entries. Commands after an undo truncate the redo tail. The cursor position is part of each snapshot.
 
 The cursor is drawn as a reverse-video cell when `cursor_visible` is true. The caller flips the flag on a timer.
 
 The primitive does not enforce read-only. The caller checks writability and decides whether to allow `lapka_editor_save`.
+
+`lapka_editor_save` writes every line followed by a newline. A file that does not end with a newline gains one on the first save.
 
 Measure: max line width clipped to `bound.w`; line count clipped to `bound.h`.
 
@@ -999,19 +993,18 @@ The binary is `tui`. It dispatches on `argv[1]`.
 - `--help` and `-h` print usage to stdout and exit 0.
 - `--version` prints `lapka MAJOR.MINOR.PATCH` to stdout and exit 0.
 - Arguments after `--` are not parsed as flags. For `spin`, they are the child command.
-- Verbs that produce a sensitive result (`password`, `password-confirm`) require stdout to not be a terminal. If `isatty(STDOUT_FILENO)` is true, the verb exits 2 with a message on stderr. The value is written to stdout, and only to stdout.
+- Verbs that produce a sensitive result (`password`, `password-confirm`) require stdout to not be a terminal. If `isatty(STDOUT_FILENO)` is true, the verb exits 2 with a message on stderr before collecting any input. The value is written to stdout, and only to stdout.
 - If `LAPKA_ALT_SCREEN=1` is set in the environment, the verb assumes the alt screen is already entered and does not manage it.
-- Both `--flag=value` and `--flag value` forms are accepted for every flag that takes a value.
 
 ### 12.2 Common flags
 
-Every verb accepts:
+The common flag vocabulary. Verbs accept these where noted.
 
 ```
+--theme=FILE            main.c, before dispatch
+--where=TL|TC|TR|LC|CC|RC|BL|BC|BR   spin
 --alt-screen, --no-alt-screen
 --mouse, --no-mouse
---theme=FILE
---where=TL|TC|TR|LC|CC|RC|BL|BC|BR
 --size=fit|full|fixed|percent
 --width=N
 --height=N
@@ -1019,6 +1012,8 @@ Every verb accepts:
 --color=N
 --title-color=N
 ```
+
+Only `--theme` and `--where` are parsed. The remaining flags are specified but not accepted by any verb; passing them results in exit 3.
 
 `--border`, if given, overrides the theme's border style for this invocation.
 
@@ -1029,7 +1024,7 @@ tui msg              "Title" "Body"
 tui yesno            "Title" "Body"
 tui menu             "Title" "Body" [--height=N] item...
 tui checklist        "Title" "Body" [--height=N] item...
-tui filter           "Title" "Body" [--height=N] [--placeholder P] [--multi]
+tui filter           "Title" "Body" [--height=N] [--multi]
 tui input            "Title" "Body" [--default D]
 tui password         "Title" "Body"
 tui password-confirm "Title" "Body" [--confirm-prompt P] [--tries N]
@@ -1059,12 +1054,14 @@ Fourteen verbs.
 | `password-confirm` | yes | no | yes |
 | `spin` | yes | no | no |
 | `show-file` | yes | yes | no |
-| `toast` | yes | no | no |
+| `toast` | no | no | no |
 | `editor` | yes | no | yes |
 | `explorer` | yes | yes | yes |
 | `hub` | yes | yes | yes |
 
-Every verb enters the alt screen. When run under `LAPKA_ALT_SCREEN=1`, the caller has already entered it.
+`toast` runs on the main screen. On a terminal that is not already in the alt screen, the toast pixels persist after exit until something else redraws. Toasts are best used in a session that already holds the alt screen.
+
+Every other verb enters the alt screen. When run under `LAPKA_ALT_SCREEN=1`, the caller has already entered it.
 
 ### 12.5 Cancel semantics
 
@@ -1082,19 +1079,21 @@ Every verb enters the alt screen. When run under `LAPKA_ALT_SCREEN=1`, the calle
 | `spin` | n/a | n/a | send SIGTERM to child, wait, exit with child status | n/a |
 | `show-file` | n/a | exit pager, exit 0 | exit pager, exit 0 | n/a |
 | `toast` | n/a | n/a | exit 0 | n/a |
-| `editor` | insert newline | if dirty, show toast; if clean, exit 0 | exit 1 | n/a |
-| `explorer` | open file action menu; on a directory, descend | exit 1 | exit 1 | n/a |
+| `editor` | insert newline | if dirty, first Esc shows toast, second Esc discards and exits; if clean, exit 0 | exit 1 | n/a |
+| `explorer` | open file action menu; on a directory, descend (or open action menu if `--dir`) | exit 1 | exit 1 | n/a |
 | `hub` | commit, exit 0 | confirm quit, then exit 1 | exit 1 | n/a |
 
 `msg` exits 0 always. Any key event other than resize or focus acknowledges.
 
 `checklist`, `filter`, and `filter --multi` return exit 0 with empty stdout when the user confirms an empty selection.
 
+`input` returns exit 0 with empty stdout on Enter with no text. It does not re-prompt.
+
 `password` re-prompts on empty submission. It never returns an empty value.
 
 `password-confirm` re-prompts on empty submission on either field. A mismatch counts against the attempt counter; empty does not. `--tries N` sets the attempt limit; `--tries 0` allows unlimited attempts. When the limit is reached, exit 1.
 
-`editor` does not auto-save on exit. The only path that writes the file is `Ctrl-S`. `Esc` with unsaved changes shows a toast and stays open. A second `Esc` discards and exits.
+`editor` does not auto-save on exit. The only path that writes the file is `Ctrl-S`. `Esc` with unsaved changes shows a toast and stays open. A second `Esc` discards and exits. Any other key between the two Escs re-arms the confirmation.
 
 `toast` exits 0 when its duration expires or when any key is pressed, whichever comes first.
 
@@ -1144,6 +1143,7 @@ typedef struct {
     const char *radio_off;
     const char *bullet;
     const char *arrow;
+    bool        owns_strings;
 } LapkaTheme;
 
 extern const LapkaTheme LAPKA_THEME_DEFAULT;
@@ -1153,9 +1153,10 @@ int               lapka_theme_load(const char *path, LapkaTheme *out);
 const LapkaTheme *lapka_theme_active(void);
 int               lapka_theme_set_file(const char *path);
 void              lapka_theme_reset(void);
+void              lapka_theme_free(LapkaTheme *t);
 ```
 
-`LAPKA_THEME_DEFAULT` is defined in `theme.h`.
+`LAPKA_THEME_DEFAULT` is defined in `theme.h`. Its `owns_strings` field is `false`; its string fields point to string literals.
 
 `lapka_color_darken` returns the given color with each RGB channel multiplied by `(100 - percent) / 100`. `percent` is clamped to `[0, 100]`.
 
@@ -1165,11 +1166,17 @@ Known keys: `bg`, `fg`, `accent`, `title`, `muted`, `error`, `warning`, `success
 
 If `modal_bg`, `modal_border`, or `modal_title` are not set, they are derived from `bg` and `title` using `lapka_color_darken`.
 
-`lapka_theme_active` reads `LAPKA_THEME` from the environment on first call, loads the file, caches the result, and returns a pointer to the cached theme. Every verb reads the active theme through this function.
+`lapka_theme_load` fills `out` from a theme file and sets `out->owns_strings = true`. The caller becomes the owner of `out`'s string fields and must release them with `lapka_theme_free`. A `LapkaTheme` value loaded with `lapka_theme_load` and then copied by value shares the string pointers; `lapka_theme_free` must be called exactly once on the original.
+
+`lapka_theme_free` is a no-op if `t` is NULL or if `t->owns_strings` is `false`. Otherwise it frees the six string fields and sets `owns_strings` back to `false`.
+
+`lapka_theme_active` reads `LAPKA_THEME` from the environment on first call, loads the file, caches the result, and returns a pointer to the cached theme. Every verb reads the active theme through this function. The returned pointer is owned by the library and remains valid until `lapka_theme_set_file` or `lapka_theme_reset` is called.
+
+`lapka_theme_set_file` overrides the active theme for the rest of the process. `lapka_theme_reset` reverts to the default and frees any previously loaded strings.
 
 `--theme=FILE` calls `lapka_theme_set_file` before dispatch, overriding both `LAPKA_THEME` and the default. If the file cannot be read, the verb exits 2.
 
-`GUM_TITLE_COLOR` and `GUM_ACCENT_COLOR`, if set, override `theme.title` and `theme.accent` respectively for the current invocation. `--title-color` overrides `GUM_TITLE_COLOR`. `--color` overrides `GUM_ACCENT_COLOR`. `--border` overrides `theme.border`.
+`GUM_TITLE_COLOR` and `GUM_ACCENT_COLOR`, if set, override `theme.title` and `theme.accent` respectively for the current invocation. `--title-color` overrides `GUM_TITLE_COLOR`. `--color` overrides `GUM_ACCENT_COLOR`. `--border` overrides `theme.border`. These environment overrides are not parsed.
 
 ### 12.8 Hint line
 
@@ -1186,6 +1193,8 @@ int lapka_draw_hint(LapkaFramebuffer *fb, int y,
 ```
 
 Keys render in the given `fg` with `LAPKA_ATTR_BOLD`. Labels render in the same `fg` without attributes. Items are separated by two spaces.
+
+`LapkaHintItem` and `lapka_draw_hint` are declared in `src/render/draw.h`, which is not installed as a public header.
 
 Standard hints per verb:
 
@@ -1230,11 +1239,11 @@ Item fields:
 - `label` — required, human label.
 - `widget` — required, one of `menu`, `input`, `password`, `yesno`, `multiselect`, `filter`, `subhub`.
 - `value` — current value from the state. Optional; if absent, the item is unset.
-- `choices_cmd` — a shell command whose stdout lines become the choices. Only valid for `menu` and `multiselect`. Replaces `choice` directives if both are present.
-- `placeholder` — greyed text shown inside an empty `input`.
-- `message` — help text shown above the field.
+- `choices_cmd` — a shell command whose stdout lines become the choices. Only valid for `menu` and `multiselect`. Replaces `choice` directives if both are present. Runs once per item, on first focus, and the result is cached for the remainder of the session.
+- `placeholder` — greyed text shown inside an empty `input`. Parsed and stored, not rendered.
+- `message` — help text shown above the field. Rendered one row above the editor overlay while the item is open.
 - `visible_if` — a `KEY=value` condition, or `KEY=v1,v2,v3` for multiple. Item is hidden unless it matches.
-- `subhub` — path to another IN file, for `widget=subhub`. If the path is relative, it is resolved against the directory of the current IN file.
+- `subhub` — path to another IN file, for `widget=subhub`. If the path is relative, it is resolved against the directory of the IN file that declared the item. For the top-level hub, that is the directory of the file passed to `--in`.
 
 ### 13.2 Interface
 
@@ -1323,7 +1332,7 @@ The hub knows nothing about ArtixForge. Bash writes the shape, the hub renders i
 
 Used by `spin` and `choices_cmd`.
 
-- Spawn via `posix_spawn` with `POSIX_SPAWN_SETSIGDEF`.
+- Spawn via `posix_spawn` with `POSIX_SPAWN_SETSIGDEF` and a full signal set (`sigfillset`), so every catchable signal is reset to `SIG_DFL` in the child.
 - Pipes for stdout and stderr.
 - The parent polls its own tty and the child's stdout in the same loop, and checks the resize flag.
 - On receipt of byte `0x03` (Ctrl-C), the parent sends `SIGTERM` to the child, waits with a timeout, then `SIGKILL` if needed, and exits with the child's status.
@@ -1355,11 +1364,13 @@ include/lapka/verbs.h
 
 `primitive.h` defines `LapkaPrimitive`, `LapkaPrimitiveKind`, `LapkaSelectMode`, `LapkaListStyle`, `LapkaCursorStyle`, `LapkaScrollStyle`, `LapkaMatcher`, and the primitive constructor functions.
 
-`theme.h` defines `LapkaTheme`, `LAPKA_THEME_DEFAULT`, `lapka_color_darken`, `lapka_theme_load`, `lapka_theme_active`, `lapka_theme_set_file`, and `lapka_theme_reset`.
+`theme.h` defines `LapkaTheme`, `LAPKA_THEME_DEFAULT`, `lapka_color_darken`, `lapka_theme_load`, `lapka_theme_active`, `lapka_theme_set_file`, `lapka_theme_reset`, and `lapka_theme_free`.
 
 `verbs.h` defines `LapkaInitOptions`, `LapkaRunCallbacks`, and `lapka_run`.
 
-`lapka.h` includes all others.
+`lapka.h` includes only `types.h`, `theme.h`, and `verbs.h`. `layer.h` and `primitive.h` are not included.
+
+`lapka_draw_text` and `lapka_draw_hint` are declared in `src/render/draw.h`. That header is not installed.
 
 Private headers live under `src/util/`: `buf.h`, `log.h`.
 
@@ -1407,10 +1418,8 @@ lapka/
 │   │   └── theme.c
 │   ├── primitive/
 │   │   ├── primitive.c
-│   │   ├── block.c
 │   │   ├── list.c
 │   │   ├── text.c
-│   │   ├── prompt.c
 │   │   ├── fuzzy.c
 │   │   ├── tabs.c
 │   │   ├── progress.c
@@ -1459,13 +1468,13 @@ lapka/
     └── PKGBUILD
 ```
 
-`src/core/notice.c` contains the CLEAR License v1 notice string with `__attribute__((section(".notice")))` where supported, and no section attribute otherwise.
+`src/core/notice.c` contains the CLEAR License v1 notice string with `__attribute__((section(".notice")))`.
 
 ---
 
 ## 17. Test plan
 
-**Unit.** `utf8.c`, `rect.c`, `box.c`, `escape.c`, `fuzzy.c`, `theme.c`. No tty required.
+**Unit.** `utf8.c`, `rect.c`, `box.c`, `fuzzy.c`, `theme.c`. No tty required.
 
 **Verb.** One test per verb, using the scripted-input harness and comparing rendered cells against snapshots. No tty required.
 
@@ -1477,7 +1486,7 @@ lapka/
 
 **Fuzz.** Feed random bytes into the escape parser. Assert no crashes and no infinite loops.
 
-**Terminal matrix.** Run every verb under `TERM=xterm`, `TERM=linux`, `TERM=xterm-256color`, `TERM=screen-256color`, `TERM=tmux-256color`, and inside `tmux`. Compare snapshots where they should match.
+**Terminal matrix.** Run every verb under `TERM=xterm`, `TERM=linux`, `TERM=xterm-256color`, `TERM=screen-256color`, `TERM=tmux-256color`, and inside `tmux`. Compare snapshots where they should match. `TERM=linux` output differs from the others because quantization is not implemented.
 
 **Snapshot.** Golden cell buffers for every verb in default layout. Diff on regression.
 
@@ -1568,7 +1577,7 @@ Factual statements of the form "based on lapka, CLEAR-licensed software by realv
 
 ### 21.1 Downstream visibility
 
-The `README.md` at the repository root states the CLEAR-to-copyleft incompatibility in plain language. The `PKGBUILD` `pkgdesc` names it. The shared library embeds an ASCII-only `NOTICE` string containing the phrase `CLEAR License v1 - not GPL-compatible` in a `.notice` section, retrievable via `strings liblapka.so`. The section is emitted via `__attribute__((section(".notice")))` where the compiler supports it, and the string is otherwise present as a plain static constant in `src/core/notice.c`.
+The `README.md` at the repository root states the CLEAR-to-copyleft incompatibility in plain language. The `PKGBUILD` `pkgdesc` names it. The shared library embeds an ASCII-only `NOTICE` string containing the phrase `CLEAR License v1 - not GPL-compatible` in a `.notice` section, retrievable via `strings liblapka.so`. The section is emitted via `__attribute__((section(".notice")))`.
 
 ### 21.2 Contributor recording
 
@@ -1580,18 +1589,16 @@ The file `docs/CONTRIBUTORS.md` exists in the repository from the first commit. 
 
 - Every `_new` function returns an object the caller owns and must free.
 - `lapka_list_new` and `lapka_list_set_items` copy the caller's strings. The caller's arrays and strings may be freed immediately after the call returns.
-- `lapka_block_new` and `lapka_block_set` copy the text.
 - `lapka_text_new` and `lapka_text_set` copy the value.
 - `lapka_text_set_prefix` copies the prefix.
-- `lapka_prompt_new` and `lapka_prompt_set` copy the hint.
 - `lapka_list_result` returns a pointer owned by the list. It is valid until the list is freed or its items are replaced.
 - `lapka_editor_text` returns a newly allocated string the caller owns and must free.
 - `lapka_tabs_set_child` frees the previous child at that index, if any. Children not installed are owned by the caller.
 - `lapka_tree_add` copies the label. `lapka_tree_userdata` returns the pointer set by `lapka_tree_set_userdata`, owned by the caller.
 - `lapka_notification_new` copies the message.
 - `lapka_pager_set_lines` copies the lines. `lapka_pager_set_file` reads the file and copies its lines.
-- `lapka_theme_load` fills the caller's `LapkaTheme` and stores owned copies of any string fields. String fields from the previous load are freed on the next load or on `lapka_theme_reset`.
-- `lapka_layer_new` allocates the buffer. `lapka_layer_resize` reallocates it. `lapka_layer_free` frees it and calls the layer's `free` callback if set.
+- `lapka_theme_load` fills the caller's `LapkaTheme` and sets `owns_strings`. The caller must call `lapka_theme_free` to release the string fields. Copying the struct by value shares the string pointers; `lapka_theme_free` must be called exactly once on the original.
+- `lapka_layer_new` allocates the buffer. `lapka_layer_resize` reallocates it. `lapka_layer_free` frees it and calls the layer's `free` callback, which is responsible for `userdata` only.
 - The compositor owns no memory. It reads layer buffers in place.
 - The run loop owns the framebuffer. It is allocated at run entry and freed at run exit.
 - Verbs allocate for the duration of their run and free everything before returning.

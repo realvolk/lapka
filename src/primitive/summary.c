@@ -6,6 +6,7 @@
  */
 
 #include <lapka/primitive.h>
+#include <render/draw.h>
 #include "core/utf8.h"
 
 #include <stdlib.h>
@@ -17,37 +18,6 @@ typedef struct {
     int    cap;
     int    scroll;
 } SummaryData;
-
-static void put_cp(LapkaCell *buf, int w, int h, int x, int y, uint32_t cp,
-                   uint32_t fg, uint32_t bg, uint16_t attrs) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    LapkaCell c = { cp, fg, bg, attrs };
-    buf[(size_t)y * (size_t)w + (size_t)x] = c;
-}
-
-static int draw_str(LapkaCell *buf, int w, int h, int x, int y,
-                    const char *s, uint32_t fg, uint32_t bg, uint16_t attrs,
-                    int max_cols) {
-    if (!s) return 0;
-    const uint8_t *p = (const uint8_t *)s;
-    int cx = x;
-    int used = 0;
-    while (*p) {
-        uint32_t cp;
-        int bytes = lapka_utf8_decode(p, 4, &cp);
-        if (bytes <= 0) break;
-        p += bytes;
-        int cw = lapka_cp_width(cp);
-        if (cw == 0) continue;
-        if (max_cols >= 0 && used + cw > max_cols) break;
-        for (int i = 0; i < cw; i++) {
-            put_cp(buf, w, h, cx + i, y, i == 0 ? cp : 0, fg, bg, attrs);
-        }
-        cx += cw;
-        used += cw;
-    }
-    return used;
-}
 
 static void append_line(SummaryData *d, const char *line, size_t len) {
     if (d->line_count >= d->cap) {
@@ -91,7 +61,7 @@ static void summary_draw(LapkaPrimitive *p, LapkaCell *buf, int w, int h,
 
     for (int i = first; i < last; i++) {
         int y = i - first;
-        draw_str(buf, w, h, 0, y, d->lines[i], 0, 0, 0, w);
+        lapka_draw_str(buf, w, h, 0, y, d->lines[i], 0, 0, 0, w);
     }
 }
 

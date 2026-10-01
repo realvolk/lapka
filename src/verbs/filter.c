@@ -20,7 +20,6 @@
 typedef struct {
     const char     *title;
     const char     *body;
-    const char     *placeholder;
     bool            multi;
     LapkaPrimitive *text;
     LapkaPrimitive *list;
@@ -153,7 +152,6 @@ static char **read_items_from_stdin(int *count_out) {
 int cmd_filter(int argc, char **argv) {
     const char *title = NULL;
     const char *body = NULL;
-    const char *placeholder = "";
     bool multi = false;
 
     int pos = 0;
@@ -161,11 +159,6 @@ int cmd_filter(int argc, char **argv) {
         const char *a = argv[i];
         if (strcmp(a, "--multi") == 0 || strcmp(a, "--no-limit") == 0) {
             multi = true;
-            continue;
-        }
-        if (strcmp(a, "--placeholder") == 0 || strcmp(a, "-p") == 0) {
-            if (i + 1 >= argc) return 3;
-            placeholder = argv[++i];
             continue;
         }
         if (strcmp(a, "--height") == 0) {
@@ -194,7 +187,6 @@ int cmd_filter(int argc, char **argv) {
     memset(&d, 0, sizeof(d));
     d.title = title;
     d.body = body;
-    d.placeholder = placeholder;
     d.multi = multi;
 
     d.text = lapka_text_new("", false);

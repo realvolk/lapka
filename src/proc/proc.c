@@ -19,6 +19,11 @@
 extern char **environ;
 
 int lapka_proc_start(const char *const *argv, LapkaProc *p) {
+    p->pid = -1;
+    p->fd = -1;
+    p->status = 0;
+    p->done = false;
+
     int fds[2];
     if (pipe(fds) != 0) return -1;
 
@@ -32,10 +37,7 @@ int lapka_proc_start(const char *const *argv, LapkaProc *p) {
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
     sigset_t def;
-    sigemptyset(&def);
-    sigaddset(&def, SIGINT);
-    sigaddset(&def, SIGTERM);
-    sigaddset(&def, SIGPIPE);
+    sigfillset(&def);
     posix_spawnattr_setsigdefault(&attr, &def);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF);
 
